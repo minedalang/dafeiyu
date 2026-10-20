@@ -9,6 +9,24 @@ from __future__ import annotations
 import json
 
 
+def speech_interval_bounds(minimum_minutes=3, maximum_minutes=6) -> tuple[int, int]:
+    """Validate the editable quiet interval and return seconds for the scheduler.
+
+    Configs from older releases may omit these keys; corrupt values should not
+    crash the pet or accidentally trigger an API request every few milliseconds.
+    """
+    def minutes(value, fallback):
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError):
+            number = fallback
+        return max(1, min(60, number))
+
+    minimum = minutes(minimum_minutes, 3)
+    maximum = max(minimum, minutes(maximum_minutes, 6))
+    return minimum * 60, maximum * 60
+
+
 def combine_persona(character_prompt: str, user_prompt: str) -> str:
     """Keep a character's identity while honoring the editable AI settings."""
     character = str(character_prompt or "").strip()

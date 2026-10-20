@@ -35,6 +35,7 @@ from ..settings_widgets import (
 )
 from .themes import CHAT_UI_STYLE_LABELS, CHAT_UI_VIEW_ASPECT, theme_names
 from .utils import _safe_emit
+from ..autonomy_speech import speech_interval_bounds
 
 
 class _AiSettingsPage(QWidget):
@@ -126,6 +127,17 @@ class _AiSettingsPage(QWidget):
         self.autonomy_interval.setRange(20, 300)
         self.autonomy_interval.setSuffix(" 秒")
         self.autonomy_interval.setValue(self.settings.autonomy_interval_seconds)
+        speech_min, speech_max = speech_interval_bounds(
+            config.get("autonomy_speech_min_minutes", 3),
+            config.get("autonomy_speech_max_minutes", 6))
+        self.autonomy_speech_min = BrowserSpinBox()
+        self.autonomy_speech_min.setRange(1, 60)
+        self.autonomy_speech_min.setSuffix(" 分钟")
+        self.autonomy_speech_min.setValue(speech_min // 60)
+        self.autonomy_speech_max = BrowserSpinBox()
+        self.autonomy_speech_max.setRange(1, 60)
+        self.autonomy_speech_max.setSuffix(" 分钟")
+        self.autonomy_speech_max.setValue(speech_max // 60)
         self._autonomy_edited: set[str] = set()
         # Live autonomy diagnostics. The monitor only retains action names,
         # execution results and timings; it does not store prompts or screenshots.
@@ -297,6 +309,16 @@ class _AiSettingsPage(QWidget):
                 "每 20–300 秒最多发起一次决策（单飞、不积压）；建议从 40 秒开始，"
                 "模型响应慢时不会阻塞动画。",
                 self.autonomy_interval, parent=self),
+            SettingRow(
+                "autonomy_speech_min_minutes", "自主搭话最短间隔",
+                "持续活动期间，隔多久再次让 AI 判断是否主动说话。默认最短 3 分钟。"
+                "需要实际 API 请求，模型仍可决定保持安静；睡觉时不主动打扰。",
+                self.autonomy_speech_min, parent=self),
+            SettingRow(
+                "autonomy_speech_max_minutes", "自主搭话最长间隔",
+                "默认最长 6 分钟。和最短间隔相同即为固定间隔；"
+                "设置保存后，后台会重新安排下一次搭话判断。",
+                self.autonomy_speech_max, parent=self),
         ], self))
         root.addWidget(SettingsSection("AI 决策状态面板", [
             SettingRow(
@@ -366,6 +388,8 @@ class _AiSettingsPage(QWidget):
             lambda _: self._autonomy_edited.add("autonomy_screen_enabled"))
         self.autonomy_interval.valueChanged.connect(
             lambda _: self._autonomy_edited.add("autonomy_interval_seconds"))
+        self.autonomy_speech_min.valueChanged.connect(self._speech_min_changed)
+        self.autonomy_speech_max.valueChanged.connect(self._speech_max_changed)
         self._reasoning_effort_row = thinking_web_rows[1]
         self._web_detail_rows = thinking_web_rows[3:]
         self._web_key_row = thinking_web_rows[4]
@@ -938,6 +962,16 @@ class _AiSettingsPage(QWidget):
         self.test_result.setStyleSheet("color: #16843b;" if ok else "color: #c9362b;")
         self._test_thread = None
 
+    def _speech_min_changed(self, _value) -> None:
+        self._autonomy_edited.add("autonomy_speech_min_minutes")
+        if self.autonomy_speech_min.value() > self.autonomy_speech_max.value():
+            self.autonomy_speech_max.setValue(self.autonomy_speech_min.value())
+
+    def _speech_max_changed(self, _value) -> None:
+        self._autonomy_edited.add("autonomy_speech_max_minutes")
+        if self.autonomy_speech_max.value() < self.autonomy_speech_min.value():
+            self.autonomy_speech_min.setValue(self.autonomy_speech_max.value())
+
     def save(self) -> None:
         # 保存前基于磁盘最新配置重取快照：另一个设置窗口（AI 设置/桌宠设置 AI 页）
         # 可能在本窗口打开期间改过 Provider 结构；先保留本窗口的 provider 草稿/
@@ -999,3 +1033,9 @@ class _AiSettingsPage(QWidget):
         if self._system_notify_dirty:
             self.config.set("system_notifications_enabled", self.system_notify_check.isChecked())
         self.config.set_chat_settings(self.settings)
+        # These are global preferences, not ChatSettings fields. Saving after
+        # set_chat_settings avoids losing them to ChatSettings.to_dict().
+        if "autonomy_speech_min_minutes" in self._autonomy_edited:
+            self.config.set("autonomy_speech_min_minutes", int(self.autonomy_speech_min.value()))
+        if "autonomy_speech_max_minutes" in self._autonomy_edited:
+            self.config.set("autonomy_speech_max_minutes", int(self.autonomy_speech_max.value()))

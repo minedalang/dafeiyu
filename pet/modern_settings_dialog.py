@@ -1990,6 +1990,8 @@ class ModernSettingsDialog(QDialog):
                             "autonomy_enabled",
                             "autonomy_screen_enabled",
                             "autonomy_interval_seconds",
+                            "autonomy_speech_min_minutes",
+                            "autonomy_speech_max_minutes",
                         ),
                     ),
                     (

@@ -24,7 +24,8 @@ from .autonomy_intent import (
     silent_play_replay,
 )
 from .autonomy_monitor import get_autonomy_monitor
-from .autonomy_speech import build_speech_messages, parse_speech_response
+from .autonomy_speech import (build_speech_messages, parse_speech_response,
+                              speech_interval_bounds)
 from .activity_lifecycle import (
     SLEEP_ANIMATION, WAKE_ANIMATIONS, duration_seconds, is_night, sleep_pressure,
 )
@@ -224,7 +225,9 @@ class AutonomyService(QObject):
         self._speech_active = -1
         self._speech_last_at = 0.0
         self._speech_recent = deque(maxlen=5)
-        self._speech_next_at = time.monotonic() + random.uniform(55, 100)
+        self._speech_interval_min_seconds = 180
+        self._speech_interval_max_seconds = 360
+        self._speech_next_at = time.monotonic() + self._next_speech_delay()
         self._last_click_request_at = float("-inf")
         self._speaking_for_click = False
         # One most-recent foreground-window frame, kept in RAM only. The
@@ -242,6 +245,10 @@ class AutonomyService(QObject):
     def enabled(self) -> bool:
         return self._enabled
 
+    def _next_speech_delay(self) -> float:
+        return random.uniform(self._speech_interval_min_seconds,
+                              self._speech_interval_max_seconds)
+
     def apply_config(self):
         data = self._config.get("chat", {}) or {}
         enabled = data.get("autonomy_enabled") is True
@@ -252,6 +259,13 @@ class AutonomyService(QObject):
             seconds = 40
         interval = max(20, min(300, seconds)) * 1000
         self._interval_seconds = interval // 1000
+        old_speech_bounds = (self._speech_interval_min_seconds,
+                             self._speech_interval_max_seconds)
+        speech_bounds = speech_interval_bounds(
+            self._config.get("autonomy_speech_min_minutes", 3),
+            self._config.get("autonomy_speech_max_minutes", 6))
+        (self._speech_interval_min_seconds,
+         self._speech_interval_max_seconds) = speech_bounds
         was_enabled = self._enabled
         changed = (was_enabled != enabled or self._screen_enabled != screen)
         self._enabled = enabled
@@ -264,7 +278,8 @@ class AutonomyService(QObject):
             self._pending_visual = None
             self._speech_active = -1
             self._speech_busy = False
-            self._speech_next_at = time.monotonic() + random.uniform(55, 100)
+        if changed or old_speech_bounds != speech_bounds:
+            self._speech_next_at = time.monotonic() + self._next_speech_delay()
         if not enabled:
             self._timer.stop()
             self._life_timer.stop()
@@ -399,7 +414,7 @@ class AutonomyService(QObject):
         self._monitor.publish(life_state=self._life.snapshot())
         self._pending_user_text = message
         # A real conversation takes precedence over the next casual remark.
-        self._speech_next_at = time.monotonic() + random.uniform(180, 360)
+        self._speech_next_at = time.monotonic() + self._next_speech_delay()
         self._cancel_plan(awakened=True)
         self._monitor.publish(state="收到聊天消息，准备选择对应动作",
                               next_decision_at=None)
@@ -416,7 +431,7 @@ class AutonomyService(QObject):
         if now - self._last_click_request_at < 12:
             return  # Rapid clicking must not spam the model or pop many bubbles.
         self._last_click_request_at = now
-        self._speech_next_at = now + random.uniform(180, 360)
+        self._speech_next_at = now + self._next_speech_delay()
         self._monitor.publish(speech_status="收到点击，等待 AI 判断",
                               speech_next_at=time.time() + (self._speech_next_at - now))
         # The normal animation/click sounds should already be visible before
@@ -452,7 +467,7 @@ class AutonomyService(QObject):
             return
         if self._speech_busy or self._busy:
             return  # Keep a single concurrent model request per process.
-        if time.monotonic() - self._speech_last_at < 120:
+        if time.monotonic() - self._speech_last_at < 45:
             return
         pending = self._pending_visual
         trigger = ("window" if pending is not None
@@ -513,7 +528,7 @@ class AutonomyService(QObject):
             world["foreground_observation"] = visual_context
             self._pending_visual = None
         now = time.monotonic()
-        self._speech_next_at = now + random.uniform(180, 360)
+        self._speech_next_at = now + self._next_speech_delay()
         self._speech_busy = True
         self._speech_serial += 1
         self._speech_active = request_id = self._speech_serial

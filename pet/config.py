@@ -1258,6 +1258,8 @@ class Config:
             "file_interpret": _default_file_interpret_data(),
             "chat_ui_style": "modern",  # modern / classic（仅聊天窗口保留双实现）
             "chat_follow_pet": False,  # 聊天窗口是否跟随桌宠移动
+            "autonomy_speech_min_minutes": 3,  # 主动搭话两次独立判断的最短间隔
+            "autonomy_speech_max_minutes": 6,  # 主动搭话两次独立判断的最长间隔
             "system_notifications_enabled": True,  # 对话完成/失败/需要授权时弹桌面系统通知
             "todo_reminder_enabled": True,  # 待办提醒总开关
             "todo_reminder_lead_minutes": 5,  # 待办提前提醒分钟数（0~60，0=不提前）
@@ -1554,6 +1556,8 @@ class Config:
             "chat_bg_crops",
             "chat_ui_style",
             "chat_follow_pet",
+            "autonomy_speech_min_minutes",
+            "autonomy_speech_max_minutes",
             "system_notifications_enabled",
             "todo_reminder_enabled",
             "todo_reminder_lead_minutes",
