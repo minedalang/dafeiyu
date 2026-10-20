@@ -283,6 +283,9 @@ class ProactiveScreenWatcher:
         self._last_dhash: int | None = None  # None = 尚无基线（dHash 可能合法为 0）
         self._worker_busy: bool = False
         self._request_in_flight: bool = False  # 视觉请求进行中：同时只允许一条完整 pipeline
+        # Optional single-brain handoff. With autonomous AI enabled the
+        # watcher remains the authorized capture/trigger, not an LLM caller.
+        self._decision_sink = None
         self._generation: int = 0  # 代次令牌：pause/关闭 时自增，使已派发/排队的任务失效
 
         state_path = self.cfg.dir / "proactive_screen_state.json"
@@ -294,6 +297,14 @@ class ProactiveScreenWatcher:
         self.memory = ProactiveMemory(memory_path)
 
         self.apply_config()
+
+    def set_decision_sink(self, sink) -> None:
+        """Send whitelisted frames to the unified planner, or restore legacy AI.
+
+        Called from the GUI thread; None keeps the original standalone
+        proactive commentary when autonomous behavior is disabled.
+        """
+        self._decision_sink = sink if callable(sink) else None
 
     def is_running(self) -> bool:
         """检查内部定时器是否处于运行状态。"""
@@ -535,14 +546,6 @@ class ProactiveScreenWatcher:
                 # last_request 已在 try_acquire 原子盖章，无需再 record_attempt
                 return
 
-            # 真实模式：触发先兆提示 + 派发后台视觉请求（同上，盖章已完成）
-            # 先兆 → 模型答复整个窗口期内占用气泡位，自言自语让路（防连环顶掉）
-            hold = getattr(self.win, "hold_bubble", None)
-            if callable(hold):
-                hold(30.0)
-            if eff.get("pre_cue", True) and hasattr(self.win, "show_bubble"):
-                self.win.show_bubble("让我看看……", duration_ms=2500)
-
             # 纯内存 JPEG bytes（严禁写临时文件）；worker 线程已完成编码，
             # 直接调用（测试）传入 PIL Image 时在此兼容编码
             if isinstance(img, (bytes, bytearray)):
@@ -553,6 +556,29 @@ class ProactiveScreenWatcher:
                 buf = io.BytesIO()
                 img.convert("RGB").save(buf, "JPEG", quality=70)
                 jpeg_bytes = buf.getvalue()
+
+            # Unified mode: exactly one model request may decide both whether
+            # to speak and which animations to play. Do not launch the legacy
+            # independent vision request (or its competing reply bubble).
+            sink = self._decision_sink
+            if sink is not None:
+                try:
+                    sink(jpeg_bytes, process=str(info.get("process", "")),
+                         activity=classify_activity(
+                             str(info.get("process", "")),
+                             str(info.get("title", ""))))
+                except Exception:
+                    import logging
+                    logging.exception("主动识屏：转交统一 AI 决策失败")
+                return
+
+            # Legacy standalone mode only: pre-cue and reserve the bubble.
+            # Unified decisions must be allowed to speak without this hold.
+            hold = getattr(self.win, "hold_bubble", None)
+            if callable(hold):
+                hold(30.0)
+            if eff.get("pre_cue", True) and hasattr(self.win, "show_bubble"):
+                self.win.show_bubble("让我看看……", duration_ms=2500)
 
             # 解析 Provider（手册 §6：免费优先策略）
             provider, system_prompt = self._resolve_vision_provider(eff)

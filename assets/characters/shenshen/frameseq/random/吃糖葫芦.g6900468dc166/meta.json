@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "吃糖葫芦.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "6900468dc166bfb90e1cfb73de9b41a08c62513483ce1300658340cf942be3cd"
+}

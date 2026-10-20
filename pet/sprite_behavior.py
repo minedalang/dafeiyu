@@ -115,6 +115,7 @@ from weakref import WeakKeyDictionary
 from PySide6.QtCore import QPointF, QRect
 
 from . import catalog, movement
+from .animation_loops import advance_middle_loop
 from .pet_sprite import INTERACTION_DRAG, INTERACTION_NORMAL, INTERACTION_THROWN
 from .predictive_prewarm import PredictivePrewarm
 
@@ -134,6 +135,7 @@ STATE_MOVE = "move"
 STATE_TURN = "turn"
 STATE_CLICK = "click"
 STATE_ACTS = "acts"
+STATE_HELD = "held_activity"  # AI 长时睡眠：持续播放素材中段，直到明确结束/交互
 #: 拖拽接管态（F1）：画面 = drag 悬空动画，位置归鼠标；不属于掷骰链
 STATE_DRAG = "drag"
 #: 抛掷飞行接管态（F4）：画面 = drag（悬空）动画循环 + 物理按速度加速播放；
@@ -208,13 +210,14 @@ class _SpriteState:
                  "move_clip_finished", "move_loops_done", "click_tail_grace",
                  "click_final_seen", "click_clip_finished", "turn_tail_grace",
                  "turn_final_seen", "turn_clip_finished", "landing_pinned",
-                 "was_flying", "warm_landing_submitted")
+                 "was_flying", "warm_landing_submitted", "held_fallback")
 
     def __init__(self) -> None:
         self.state = STATE_IDLE
         self.anim: str | None = None      # 当前绑定的 clip 名（None = 尚未起播）
         self.elapsed = 0.0                # 当前状态已流逝（tick 累加的 dt）
         self.duration = 0.0               # 当前 clip 时长（秒）
+        self.held_fallback = False        # 当前播放器不支持中段 seek → 整段循环
         self.move_target: QPointF | None = None
         self.pending_move: dict | None = None  # 反向前先转向的移动计划
         self.predictor = None                  # tick 创建状态时挂 PredictivePrewarm
@@ -490,6 +493,27 @@ class BehaviorController:
         sprite.bind_clip(name)
         return True
 
+    def start_held_animation(self, sprite, name: str) -> bool:
+        """AI 长时活动拥有动画链；帧循环不走普通 ACTS 的一次性收尾。"""
+        if not self.play_once(sprite, name):
+            return False
+        st = self._states[sprite]
+        st.state = STATE_HELD
+        st.held_fallback = False
+        return True
+
+    def held_animation_active(self, sprite, name: str) -> bool:
+        st = self._states.get(sprite)
+        return bool(st and st.state == STATE_HELD and st.anim == name
+                    and getattr(sprite, "interaction_state", INTERACTION_NORMAL)
+                    == INTERACTION_NORMAL)
+
+    def end_held_animation(self, sprite, name: str) -> bool:
+        """只有当前仍由 AI 占用的睡眠画面才回待机；不覆盖用户点击。"""
+        if not self.held_animation_active(sprite, name):
+            return False
+        return self.play_idle(sprite)
+
     def play_move_once(self, sprite, name: str) -> bool:
         """以指定移动素材触发一次移动（菜单「移动」类入口；无可达空间
         回退动作池，window.py trigger_move 语义）。"""
@@ -584,6 +608,10 @@ class BehaviorController:
         """
         st = self._states.get(sprite)
         if st is None:
+            return
+        if st.state == STATE_HELD:
+            # 播放器不支持回跳时仍需持续动：整段播完后续圈，不能冻结末帧。
+            sprite.restart_clip()
             return
         if st.state == STATE_IDLE:
             st.idle_clip_finished = True
@@ -796,6 +824,12 @@ class BehaviorController:
                             self._roll_next(sprite, st)
             else:
                 self._maybe_predict(sprite, st)
+        elif st.state == STATE_HELD:
+            if not st.held_fallback:
+                outcome = advance_middle_loop(self._clip_of(sprite))
+                if outcome == "unavailable":
+                    st.held_fallback = True
+                    logger.debug("当前动画播放器不支持中段回跳；降级为整段循环")
         elif st.state == STATE_CLICK:
             if st.elapsed >= st.duration and self._tail_done(sprite, st, dt, "click"):
                 self._enter_idle(sprite, st, self._categories(sprite.library))

@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "吃青团.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "0d99393dd64ddf0b1ec4ab4cf392c86092ab5edf58d12f5b72e325035da23606"
+}

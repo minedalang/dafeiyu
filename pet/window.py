@@ -1528,6 +1528,9 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
         _link_request：本次请求是否来自 Agent 联动（决定失败重试的取消语义，
         B7 复审 R2：Agent 回到 idle 时只取消联动来源的待重试）。
         """
+        if name != getattr(self, "_autonomy_loop_clip_name", None):
+            # 点击/拖动/其他功能切走时不再强留旧睡眠循环。
+            self._autonomy_loop_clip_name = None
         self._cancel_move()
         filter_switch = getattr(self, '_effects_filter_switch', None)
         if callable(filter_switch):
@@ -1784,6 +1787,28 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
         if self.idles:
             self._switch(self._pick(self.idles))
 
+    def start_autonomy_sleep_loop(self, name: str) -> bool:
+        """AI 夜间长睡；复用已有素材，支持中段帧回跳。"""
+        if not self.autonomy_ready() or name not in self.acts:
+            return False
+        self._autonomy_loop_clip_name = None
+        if not self._switch(name, _link_request=True):
+            return False
+        self._autonomy_loop_clip_name = name
+        return True
+
+    def autonomy_sleep_loop_active(self, name: str) -> bool:
+        return bool(self.autonomy_ready() and self.anim == name
+                    and getattr(self, "_autonomy_loop_clip_name", None) == name)
+
+    def stop_autonomy_sleep_loop(self, name: str) -> bool:
+        if not self.autonomy_sleep_loop_active(name):
+            return False
+        self._autonomy_loop_clip_name = None
+        if self.idles:
+            return self._switch(self._pick(self.idles))
+        return True
+
     def set_link_next_provider(self, value) -> None:
         """公开转发：注入联动动作链"下一个动作提供者"回调（等价 _link_next_provider 赋值）。"""
         self._link_next_provider = value
@@ -1805,6 +1830,10 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
             return
         if name != self.anim or self.movie is None:
             return
+        if name == getattr(self, "_autonomy_loop_clip_name", None):
+            from .animation_loops import advance_middle_loop
+            if advance_middle_loop(self.movie) == "looped":
+                return  # GIF 可同步发 frameChanged；回跳帧由内层回调显示
         is_last = n >= self.lib.frames(name) - 1  # n 是 0-based 源帧号：末帧判定不提前
         plan = self._move_plan
         if plan is not None and name == plan.get('anim') and 'total_frames' in plan:
@@ -2500,6 +2529,11 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
 
     # ================================================================ 动画链
     def _on_anim_ended(self, name: str) -> None:
+        if name == getattr(self, "_autonomy_loop_clip_name", None):
+            # 不支持后跳 seek 的解码器：整段循环依旧是动画而非静止末帧。
+            if self._restart_current_clip(name):
+                return
+            self._autonomy_loop_clip_name = None
         if name == SING_ANIM:
             # 音乐自动唱歌开启且当前仍处于“唱歌中”时，直接无缝续播；
             # 不再每次播完都查一次音频 COM，降低长时间运行的崩溃风险。

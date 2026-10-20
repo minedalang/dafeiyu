@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "工作状态-垂头叹气冒汗.webm",
+ "frames": 118,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "ab00c844e62221905574b4c070e0d7b6fa14fb2afa1064c27a160f10e25f7196"
+}

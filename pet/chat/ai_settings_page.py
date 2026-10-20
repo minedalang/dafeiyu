@@ -278,8 +278,11 @@ class _AiSettingsPage(QWidget):
                 self.autonomy_enabled, parent=self),
             SettingRow(
                 "autonomy_screen_enabled", "允许自主识屏",
-                "单独授权：开启后每次决策会截取整个桌面并发送给已配置的视觉模型；"
-                "截图仅在内存中处理。关闭时仅发送鼠标与桌宠的坐标和动作状态。",
+                "授权自主 AI 理解屏幕。若原版「主动识屏」也已开启，优先共用其通过白名单、"
+                "冷却检查的前台窗口截图，同一观察只发一次决策请求；不再重复全屏截图。"
+                "仅当原版识屏未运行时，才按此开关决定是否截取整个桌面。"
+                "即使关闭本开关，已授权的原版主动识屏仍能把前台窗口观察交给自主 AI。"
+                "图片只在内存中传递，不写入聊天历史。",
                 self.autonomy_screen, parent=self),
             SettingRow(
                 "autonomy_interval_seconds", "AI 决策间隔",

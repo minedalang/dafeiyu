@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "小幅度原地360度旋转展示.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "9f1a927f63c73e3c35ee5f4d2eb58f4a46ac7eca2af69388f320d10cdef8d29c"
+}

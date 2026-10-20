@@ -2033,21 +2033,30 @@ class ChatWindow(QDialog):
         self._reset()
 
     def append_look_sync(self, user_text: str, reply: str) -> None:
-        """「看看屏幕」的问答同步进当前会话，之后可在聊天历史里回看。
-        正在生成回答时不插入，避免与在飞请求的流式输出交错。"""
-        if self.service.busy:
-            return
+        """Persist foreground observation + pet speech even during a chat request."""
+        self._append_external_messages([
+            ChatMessage("user", user_text), ChatMessage("assistant", reply)])
+
+    def append_pet_sync(self, reply: str) -> None:
+        """One autonomous line belongs to the same dialogue as direct chat."""
+        self._append_external_messages([ChatMessage("assistant", reply)])
+
+    def _append_external_messages(self, messages) -> None:
         synced, absorbed = self.store.append_messages(
-            self.session, [ChatMessage("user", user_text), ChatMessage("assistant", reply)]
+            self.session, messages
         )
         if synced is None:
-            self.session.messages.append(ChatMessage("user", user_text))
-            self.session.messages.append(ChatMessage("assistant", reply))
+            self.session.messages.extend(messages)
             self.store.save(self.session)
         else:
             self.session = synced
+        if self.service.busy:
+            # The request already has a snapshot; do not disrupt streaming UI.
+            # Its next request sees the persisted lines, and finish reloads UI.
+            self._external_sync_pending = True
+            return
+        self._load()
         if self.isVisible():
-            self._load()
             self._refresh_sessions()
             self._bottom()
 
@@ -2302,6 +2311,9 @@ class ChatWindow(QDialog):
             self.session = synced
         self._refresh_sessions()
         self._reset()
+        if getattr(self, "_external_sync_pending", False):
+            self._external_sync_pending = False
+            self._load()
         self.pet_link.success()
         self.assistant_answered.emit(text)
         self._show_system_notice("对话完成", "AI 已回复完成，点击查看。")
@@ -2319,6 +2331,9 @@ class ChatWindow(QDialog):
             self._bubble.set_content("请求失败：" + str(text), markdown=False)
             self._bubble.set_state("error")
         self._reset()
+        if getattr(self, "_external_sync_pending", False):
+            self._external_sync_pending = False
+            self._load()
         self.pet_link.error(text)
         if self._looks_like_authorization_error(text):
             self._show_system_notice(
@@ -2344,6 +2359,9 @@ class ChatWindow(QDialog):
             else:
                 self._remove_bubble(self._bubble)
         self._reset()
+        if getattr(self, "_external_sync_pending", False):
+            self._external_sync_pending = False
+            self._load()
 
     def _reset(self) -> None:
         # 停止打字机并丢弃未排空的输出：模型完成后若仍有 ~1 秒的逐字

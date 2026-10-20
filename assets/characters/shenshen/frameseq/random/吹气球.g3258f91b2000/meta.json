@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "吹气球.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "3258f91b2000d949ba38f34c1f161b0d5fa148ecffb5a95eb8a3e10b5df7fc87"
+}

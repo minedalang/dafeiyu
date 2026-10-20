@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "吃饺子.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "a607391c206cb2a1a977d72f318a6b5bfe95aee4da9b11c9de8724bd9981cc06"
+}

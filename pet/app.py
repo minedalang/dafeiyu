@@ -1177,11 +1177,26 @@ class PetInstance:
         if not self.enable_chat or not str(reply or "").strip():
             return
         self._show_proactive_reply_action(reply)
-        if self.chat_window is not None and hasattr(self.chat_window, "append_look_sync"):
-            self.chat_window.append_look_sync(user_text, reply)
+        from .chat.models import ChatMessage
+        self._sync_external_chat(
+            [ChatMessage("user", str(user_text)), ChatMessage("assistant", str(reply))],
+            "append_look_sync", (user_text, reply))
+
+    def sync_pet_speech(self, reply: str) -> None:
+        """Autonomous speech is actual assistant dialogue, not just a bubble."""
+        if not self.enable_chat or not str(reply or "").strip():
+            return
+        from .chat.models import ChatMessage
+        self._sync_external_chat(
+            [ChatMessage("assistant", str(reply))], "append_pet_sync", (reply,))
+
+    def _sync_external_chat(self, messages, ui_method: str, ui_args: tuple) -> None:
+        """One persisted conversation shared by spontaneous and direct speech."""
+        chat_window = self.chat_window
+        if chat_window is not None and hasattr(chat_window, ui_method):
+            getattr(chat_window, ui_method)(*ui_args)
             return
         try:
-            from .chat.models import ChatMessage
             from .chat.session_store import SessionStore
 
             store = SessionStore(self.config.dir, getattr(self.config, "instance_id", ""))
@@ -1200,28 +1215,27 @@ class PetInstance:
                     settings.active_provider,
                     settings.default_system_prompt,
                 )
-            msgs = [ChatMessage("user", str(user_text)), ChatMessage("assistant", str(reply))]
-            synced, _absorbed = store.append_messages(session, msgs)
+            synced, _absorbed = store.append_messages(session, messages)
             if synced is None:
                 # 会话已被并发删除等边界：本地兜底（保持旧行为）
-                session.messages.extend(msgs)
+                session.messages.extend(messages)
                 store.save(session)
         except Exception:
-            logging.exception("同步识屏问答到会话记录失败")
+            logging.exception("同步桌宠自主发言到会话记录失败")
 
-    def _show_proactive_reply_action(self, reply: str) -> None:
+    def _show_proactive_reply_action(self, reply: str, *, timeout_ms: int = 45000) -> bool:
         """Turn spontaneous screen-reading speech into a replyable bubble."""
         host = self.win or getattr(self.shell, "_overlay_shell", None)
         if host is None:
-            return
+            return False
         from .window_alerts import bubble_blocked, quiet_blocked
 
         # Respect user quiet hours / fullscreen and existing approval bubbles.
         if quiet_blocked(host) or bubble_blocked(host):
-            return
+            return False
         if (getattr(host, "_alert_current", None) is not None
                 or getattr(host, "_sticky_bubble_active", False)):
-            return
+            return False
         summary = " ".join(str(reply).split())[:140]
         if len(reply) > 140:
             summary += "…"
@@ -1241,9 +1255,10 @@ class PetInstance:
             if shown:
                 # Interactive bubbles are sticky; expire this invitation so
                 # an unattended reply button cannot block future pet speech.
-                QTimer.singleShot(45000, dismiss)
+                QTimer.singleShot(timeout_ms, dismiss)
+            return bool(shown)
         except RuntimeError:
-            pass  # Pet was destroyed while the queued screen reply arrived.
+            return False  # Pet was destroyed while the queued screen reply arrived.
 
     def _set_autostart(self, enabled: bool, win=None) -> bool:
         ok = autostart_mod.set_enabled(bool(enabled))
@@ -2023,6 +2038,54 @@ class AppShell:
         elif self.win is not None:
             self.win.show_bubble(line, duration_ms=5500)
 
+    def _recent_autonomy_dialogue(self) -> tuple[dict, ...]:
+        """Read the actual active chat session; no separate, diverging AI memory.
+
+        Every channel persists to the same SessionStore. Only the most recent
+        short text messages are sent to the planner; never attachments, keys,
+        screenshot pixels, or an entire conversation archive.
+        """
+        inst = getattr(self, "instance", None)
+        if inst is None or not inst.enable_chat:
+            return ()
+        from .chat.session_store import SessionStore
+
+        character_id = str(inst._identity_config().get(
+            "character", catalog.DEFAULT_CHARACTER))
+        instance_id = str(getattr(inst.config, "instance_id", ""))
+        if instance_id == "slot-0":
+            instance_id = ""
+        store = SessionStore(inst.config.dir, instance_id)
+        window = getattr(inst, "chat_window", None)
+        session = getattr(window, "session", None)
+        if session is not None and getattr(window, "character_id", None) == character_id:
+            session = store.load(session.session_id, character_id)
+        else:
+            sessions = store.list(character_id)
+            session = sessions[0] if sessions else None
+        if session is None:
+            return ()
+        return tuple(
+            {"role": message.role, "text": message.content[:240]}
+            for message in session.messages[-12:]
+            if message.role in ("user", "assistant")
+            and str(message.content or "").strip()
+        )
+
+    def _record_autonomy_speech(self, text: str) -> None:
+        """Only shown lines become conversation history and reply context."""
+        inst = getattr(self, "instance", None)
+        if inst is not None:
+            inst.sync_pet_speech(text)
+
+    def _present_autonomy_speech(self, text: str, fallback) -> bool:
+        """Invite a short reply for spontaneous lines; chat-triggered replies stay in chat."""
+        inst = getattr(self, "instance", None)
+        service = getattr(self, "_autonomy", None)
+        if inst is not None and not getattr(service, "_plan_from_chat", False):
+            return inst._show_proactive_reply_action(text, timeout_ms=14000)
+        return bool(fallback())
+
     def _sync_autonomy_service(self) -> None:
         """进程单例：默认无服务；两种渲染拓扑共用一份 AI 请求预算。"""
         chat = self.config.get("chat", {}) or {}
@@ -2033,14 +2096,26 @@ class AppShell:
             for host in overlay.hosts():
                 host.behavior.autonomy_enabled = enabled
         service = self._autonomy
+        watcher = getattr(getattr(self, "_shared", None), "proactive", None)
         if not enabled and service is None:
+            if watcher is not None:
+                watcher.set_decision_sink(None)
             return
         if service is None:
             from .autonomy import AutonomyService
             service = self._autonomy = AutonomyService(
-                self.config, self._autonomy_observe, self._autonomy_execute)
+                self.config, self._autonomy_observe, self._autonomy_execute,
+                recent_dialogue=self._recent_autonomy_dialogue,
+                prefer_external_vision=(watcher.is_running if watcher is not None
+                                        else None),
+                begin_sleep_loop=self._autonomy_begin_sleep_loop,
+                sleep_loop_active=self._autonomy_sleep_loop_active,
+                end_sleep_loop=self._autonomy_end_sleep_loop)
         else:
             service.apply_config()
+        if watcher is not None:
+            watcher.set_decision_sink(
+                service.queue_visual_observation if enabled else None)
 
     def _autonomy_observe(self):
         """GUI 线程采样；未授权识屏时只有非视觉桌宠/鼠标坐标。"""
@@ -2112,7 +2187,14 @@ class AppShell:
             else:
                 ok = intent.verb == "say"
             if ok and intent.say:
-                overlay.show_bubble(intent.say, duration_ms=3900, reserve=False)
+                shown = self._present_autonomy_speech(
+                    intent.say,
+                    lambda: overlay.show_bubble(intent.say, duration_ms=3900,
+                                                reserve=False))
+                if shown:
+                    self._record_autonomy_speech(intent.say)
+                elif intent.verb == "say":
+                    ok = False
             return bool(ok)
 
         win = self.win
@@ -2141,8 +2223,44 @@ class AppShell:
         else:
             ok = intent.verb == "say"
         if ok and intent.say:
-            win.show_bubble(intent.say, duration_ms=3900)
+            shown = self._present_autonomy_speech(
+                intent.say, lambda: win.show_bubble(intent.say, duration_ms=3900))
+            if shown:
+                self._record_autonomy_speech(intent.say)
+            elif intent.verb == "say":
+                ok = False
         return bool(ok)
+
+    def _autonomy_begin_sleep_loop(self, animation: str) -> bool:
+        """AI 只占用当前可用的现有动画；不会生成或改写角色素材。"""
+        overlay = getattr(self, "_overlay_shell", None)
+        if overlay is not None:
+            sprite = getattr(overlay, "sprite", None)
+            host = overlay.host_for_sprite(sprite) if sprite is not None else None
+            return bool(host and host.behavior.start_held_animation(sprite, animation))
+        win = self.win
+        return bool(win is not None and shiboken6.isValid(win)
+                    and win.start_autonomy_sleep_loop(animation))
+
+    def _autonomy_sleep_loop_active(self, animation: str) -> bool:
+        overlay = getattr(self, "_overlay_shell", None)
+        if overlay is not None:
+            sprite = getattr(overlay, "sprite", None)
+            host = overlay.host_for_sprite(sprite) if sprite is not None else None
+            return bool(host and host.behavior.held_animation_active(sprite, animation))
+        win = self.win
+        return bool(win is not None and shiboken6.isValid(win)
+                    and win.autonomy_sleep_loop_active(animation))
+
+    def _autonomy_end_sleep_loop(self, animation: str) -> bool:
+        overlay = getattr(self, "_overlay_shell", None)
+        if overlay is not None:
+            sprite = getattr(overlay, "sprite", None)
+            host = overlay.host_for_sprite(sprite) if sprite is not None else None
+            return bool(host and host.behavior.end_held_animation(sprite, animation))
+        win = self.win
+        return bool(win is not None and shiboken6.isValid(win)
+                    and win.stop_autonomy_sleep_loop(animation))
 
     def _sync_shared_optional_services(self) -> None:
         """按配置重应用进程级共享子系统（联动读方 / 主动识屏）。
