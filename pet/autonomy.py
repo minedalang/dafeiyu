@@ -18,8 +18,9 @@ from collections import deque
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from .autonomy_intent import (
-    ACTIVITY_CLIPS, ActionIntent, ActivityPlan,
-    build_decision_messages, parse_activity_plan,
+    ACTIVITY_CLIPS, ONE_SHOT_CLIPS, ActionIntent, ActivityPlan,
+    activity_stage_steps, build_decision_messages, parse_activity_plan,
+    silent_play_replay,
 )
 from .autonomy_monitor import get_autonomy_monitor
 from .activity_lifecycle import (
@@ -27,6 +28,7 @@ from .activity_lifecycle import (
 )
 
 log = logging.getLogger(__name__)
+_REPLAN_INTERVAL_MS = 90_000
 
 
 def _request_intent(provider, observation: dict, animations: tuple[str, ...],
@@ -110,6 +112,9 @@ class AutonomyService(QObject):
         self._plan_timer = QTimer(self)
         self._plan_timer.setSingleShot(True)
         self._plan_timer.timeout.connect(self._advance_plan)
+        self._replan_timer = QTimer(self)
+        self._replan_timer.setSingleShot(True)
+        self._replan_timer.timeout.connect(self._replan_tick)
         self._activity_timer = QTimer(self)
         self._activity_timer.setInterval(500)
         self._activity_timer.timeout.connect(self._activity_watch)
@@ -122,13 +127,18 @@ class AutonomyService(QObject):
         self._plan_from_chat = False
         self._plan_activity = ""
         self._plan_deadline = 0.0
+        self._plan_available = frozenset()
+        self._plan_revision = 0
         self._accepted_repeats = []
+        self._plan_repeating = False
         self._sleep_held = False
+        self._step_held_animation = ""
         self._last_awakened_at = 0.0
         self._busy = False
         self._generation = 0
         self._request_serial = 0
         self._active_request = -1
+        self._request_animations = ()
         self._cancelled = threading.Event()
         self._enabled = False
         self._screen_enabled = False
@@ -136,6 +146,9 @@ class AutonomyService(QObject):
         self._recent_activities = deque(maxlen=8)
         self._pending_user_text = ""
         self._current_request_user = False
+        self._current_request_replan = False
+        self._replan_request_revision = -1
+        self._recent_clips = deque(maxlen=8)
         # One most-recent foreground-window frame, kept in RAM only. The
         # observer and autonomous planner must not each charge an API request.
         self._pending_visual = None
@@ -202,6 +215,13 @@ class AutonomyService(QObject):
 
     def _cancel_plan(self, *, awakened: bool = False) -> None:
         """Cancel queued AI steps without interrupting user-controlled animation."""
+        self._plan_revision += 1
+        self._replan_timer.stop()
+        if self._step_held_animation:
+            try:
+                self._end_sleep_loop(self._step_held_animation)
+            except (RuntimeError, TypeError, ValueError):
+                log.warning("自主持续动画：释放失败")
         if self._sleep_held:
             try:
                 self._end_sleep_loop(SLEEP_ANIMATION)
@@ -220,8 +240,39 @@ class AutonomyService(QObject):
         self._plan_from_chat = False
         self._plan_activity = ""
         self._plan_deadline = 0.0
+        self._plan_available = frozenset()
         self._accepted_repeats = []
+        self._plan_repeating = False
         self._sleep_held = False
+        self._step_held_animation = ""
+        self._monitor.publish(
+            active_animation="", sustained=False,
+            activity_name="", activity_started_at=None,
+            activity_ends_at=None, activity_total_seconds=0)
+
+    def _schedule_replan(self, delay_ms: int = _REPLAN_INTERVAL_MS) -> None:
+        """Keep a long-lived activity fresh without resetting its deadline."""
+        if (not self._enabled or not self._plan_active
+                or self._plan_activity in ("nap", "free", "social")
+                or self._plan_deadline - time.monotonic() <= 50):
+            self._replan_timer.stop()
+            return
+        # An activity with just one usable clip should simply loop that clip.
+        candidates = ACTIVITY_CLIPS.get(self._plan_activity, ("", ()))[1]
+        if len(self._plan_available.intersection(candidates)) <= 1:
+            self._replan_timer.stop()
+            return
+        self._replan_timer.start(delay_ms)
+
+    def _replan_tick(self) -> None:
+        if (not self._enabled or not self._plan_active
+                or self._plan_activity == "nap"
+                or self._plan_deadline - time.monotonic() <= 50):
+            return
+        if self._busy:
+            self._schedule_replan(10_000)
+            return
+        self._tick(replan=True)
 
     def queue_user_message(self, text: str) -> None:
         """A user's chat overrides an idle plan; actions remain model-selected.
@@ -260,10 +311,12 @@ class AutonomyService(QObject):
             QTimer.singleShot(0, self._tick)
         return True
 
-    def _tick(self):
+    def _tick(self, *, replan: bool = False):
         if not self._enabled:
             return
-        if self._plan_active:
+        if replan and not self._plan_active:
+            return
+        if self._plan_active and not replan:
             self._monitor.publish(
                 state=("正在持续睡眠（现有动画中段循环，可叫醒）"
                        if self._sleep_held else
@@ -271,7 +324,8 @@ class AutonomyService(QObject):
                        else f"正在执行活动：{self._plan_name}"),
                 next_decision_at=None)
             return  # Finish the current local sequence before another API call.
-        self._monitor.publish(next_decision_at=time.time() + self._interval_seconds)
+        if not replan:
+            self._monitor.publish(next_decision_at=time.time() + self._interval_seconds)
         if self._busy:
             return
         try:
@@ -279,9 +333,13 @@ class AutonomyService(QObject):
         except Exception as exc:  # noqa: BLE001 - GUI observation callback boundary
             log.warning("自主决策：状态采集失败（%s）", type(exc).__name__)
             self._monitor.publish(state="桌宠状态采集失败", last_error=type(exc).__name__)
+            if replan:
+                self._schedule_replan(15_000)
             return
         if observed is None:
             self._monitor.publish(state="未获取到桌宠状态，下次重试")
+            if replan:
+                self._schedule_replan(15_000)
             return
         world, animations = observed
         awakened_age = (time.monotonic() - self._last_awakened_at
@@ -292,6 +350,14 @@ class AutonomyService(QObject):
                 round(awakened_age) if awakened_age is not None and awakened_age < 600
                 else None),
         }}
+        if replan:
+            world["ongoing_activity"] = {
+                "activity": self._plan_activity,
+                "remaining_seconds": max(0, int(self._plan_deadline - time.monotonic())),
+                "current_animation": self._step_held_animation,
+                "recent_animation_names": list(self._recent_clips),
+                "goal": "choose next phase only; keep current activity and deadline",
+            }
         queued_visual = self._pending_visual
         if queued_visual is not None:
             self._pending_visual = None
@@ -319,10 +385,14 @@ class AutonomyService(QObject):
                     or provider.vision_api_key or provider.api_key)
             if not provider.model or not provider.base_url:
                 self._monitor.publish(state="模型尚未配置", last_error="缺少模型或 API 地址")
+                if replan:
+                    self._schedule_replan(15_000)
                 return
         except (AttributeError, ImportError, KeyError, ValueError):
             log.warning("自主决策：模型配置不可用")
             self._monitor.publish(state="模型配置不可用", last_error="模型配置不可用")
+            if replan:
+                self._schedule_replan(15_000)
             return
         try:
             dialogue = tuple(self._get_dialogue())
@@ -338,15 +408,20 @@ class AutonomyService(QObject):
             take_own_screen = self._screen_enabled
         self._busy = True
         self._current_request_user = bool(user_message)
+        self._current_request_replan = replan
+        self._replan_request_revision = self._plan_revision if replan else -1
         if user_message:
             self._pending_user_text = ""
         self._request_serial += 1
         request_id = self._request_serial
         self._active_request = request_id
+        self._request_animations = tuple(animations)
         generation = self._generation
         cancel = self._cancelled
         self._monitor.publish(
-            busy=True, state=("正在理解聊天指令" if user_message else "正在等待模型决策"),
+            busy=True, state=("正在理解聊天指令" if user_message else
+                              f"AI 正在更新{self._plan_name}的下一阶段" if replan else
+                              "正在等待模型决策"),
             model=str(provider.model),
             vision=bool(visual_frame is not None or take_own_screen), last_request_at=time.time(),
             requests=self._monitor.snapshot()["requests"] + 1, last_error="",
@@ -364,6 +439,8 @@ class AutonomyService(QObject):
             self._busy = False
             self._monitor.publish(
                 busy=False, state="请求线程启动失败", last_error="RuntimeError")
+            if replan:
+                self._schedule_replan(15_000)
 
     def _run_worker(self, request_id, generation, cancel, provider, world,
                     animations, recent, recent_activities, vision,
@@ -390,6 +467,9 @@ class AutonomyService(QObject):
         if request_id != self._active_request:
             return
         self._busy = False
+        was_replan = self._current_request_replan
+        replan_revision = self._replan_request_revision
+        self._current_request_replan = False
         generation, intent = result
         if generation != self._generation or not self._enabled:
             self._monitor.publish(
@@ -401,14 +481,21 @@ class AutonomyService(QObject):
             self._monitor.publish(busy=False, state="收到新的聊天指令，重新决策")
             QTimer.singleShot(0, self._tick)
             return
+        if was_replan and (not self._plan_active
+                           or replan_revision != self._plan_revision):
+            self._monitor.publish(busy=False, state="旧活动已结束，忽略过期规划")
+            return
         finished_at = time.time()
         completed = self._monitor.snapshot()["completed"] + 1
         if error_kind:
-            log.warning("自主决策：请求未完成（%s），保留待机动画", error_kind)
+            log.warning("自主决策：请求未完成（%s），保留当前动画", error_kind)
             self._monitor.publish(
-                record=True, busy=False, state="AI 请求失败",
+                record=True, busy=False,
+                state=(f"阶段更新失败，继续{self._plan_name}" if was_replan else "AI 请求失败"),
                 last_action="—", last_result="请求失败", last_error=error_kind,
                 last_decision_at=finished_at, completed=completed)
+            if was_replan:
+                self._schedule_replan()
             return
         if intent is None:
             self._monitor.publish(
@@ -416,6 +503,8 @@ class AutonomyService(QObject):
                 last_action="—", last_result="无动作或无法解析",
                 last_error="", last_decision_at=finished_at,
                 completed=completed)
+            if was_replan:
+                self._schedule_replan()
             return
         if isinstance(intent, ActionIntent):  # Backward compatible worker result.
             intent = ActivityPlan("free", (intent,))
@@ -425,9 +514,38 @@ class AutonomyService(QObject):
                 last_action="—", last_result="无法识别活动计划",
                 last_error="InvalidActivityPlan", last_decision_at=finished_at,
                 completed=completed)
+            if was_replan:
+                self._schedule_replan()
+            return
+        steps = list(activity_stage_steps(
+            intent, available_animations=self._request_animations))
+        if was_replan:
+            # A phase refresh cannot change the long-term activity or its end
+            # time. Keep the old plan if the model supplied an invalid stage.
+            if (intent.activity != self._plan_activity or not steps
+                    or not any(s.verb == "play" for s in steps)):
+                self._monitor.publish(
+                    record=True, busy=False, state=f"AI 阶段无效，继续{self._plan_name}",
+                    last_action="—", last_result="无效阶段，旧动作继续",
+                    last_error="InvalidActivityStage",
+                    last_decision_at=finished_at, completed=completed)
+                self._schedule_replan()
+                return
+            # The held animation is left in place; the next normal tick
+            # hands over to the refreshed steps after the current clip.
+            self._plan_steps = deque(steps)
+            self._plan_total = len(steps)
+            self._plan_done = 0
+            self._plan_repeating = False
+            self._accepted_repeats = []
+            self._monitor.publish(
+                record=True, busy=False,
+                state=f"AI 已更新{self._plan_name}阶段（当前动画播完后切换）",
+                last_action=f"plan：{self._plan_name}", last_result="阶段已更新",
+                last_error="", last_decision_at=finished_at, completed=completed)
+            self._schedule_replan()
             return
         self._cancel_plan()
-        steps = list(intent.steps)
         duration = duration_seconds(intent.activity, intent.duration_minutes)
         if intent.activity == "nap":
             # Never play the awakening tail at the start of a 20-minute nap.
@@ -447,16 +565,23 @@ class AutonomyService(QObject):
         self._plan_total = len(steps)
         self._plan_name = ACTIVITY_CLIPS.get(intent.activity, ("自由活动", ()))[0]
         self._plan_activity = intent.activity
+        self._plan_available = frozenset(self._request_animations)
         self._plan_deadline = time.monotonic() + duration if duration else 0.0
         self._plan_from_chat = self._current_request_user
         self._plan_active = True
         self._recent_activities.append(intent.activity)
+        started_at = time.time()
         self._monitor.publish(
             busy=False, state=(f"聊天触发活动：{self._plan_name}" if self._plan_from_chat
                                else f"AI 已规划：{self._plan_name}"),
+            activity_name=self._plan_name if duration else "",
+            activity_started_at=started_at if duration else None,
+            activity_ends_at=started_at + duration if duration else None,
+            activity_total_seconds=duration,
             last_error="", last_decision_at=finished_at, completed=completed,
             next_decision_at=None)
         self._advance_plan()
+        self._schedule_replan()
 
     def _activity_watch(self) -> None:
         """Watch a held sleep without waking the model or replacing user's click."""
@@ -479,22 +604,38 @@ class AutonomyService(QObject):
             QTimer.singleShot(1000, self._tick)
 
     def _advance_plan(self) -> None:
-        """Execute the next validated step on Qt's thread, no further API calls."""
+        """Execute one step on Qt's thread; an LLM refresh may replace future steps."""
         if not self._plan_active or not self._enabled:
             return
         if self._sleep_held:
             return  # 由 500ms 轻量时钟保持续播，绝不重复发 AI 请求。
-        if not self._plan_steps:
-            if self._plan_deadline and time.monotonic() < self._plan_deadline:
-                if self._accepted_repeats:
-                    self._plan_steps.extend(self._accepted_repeats)
-                    self._plan_total = len(self._accepted_repeats)
-                    self._plan_done = 0
-                else:
-                    self._plan_deadline = 0.0  # No usable clips: don't spin.
-            if self._plan_steps:
-                self._plan_timer.start(250)
+        if not self._plan_steps and self._plan_deadline > time.monotonic():
+            if self._accepted_repeats:
+                self._plan_steps.extend(self._accepted_repeats)
+                self._plan_total = len(self._accepted_repeats)
+                self._plan_done = 0
+                self._plan_repeating = True
+            else:
+                self._plan_deadline = 0.0  # One-off clip: don't stretch forever.
+        keep_held = False
+        if self._step_held_animation:
+            previous = self._step_held_animation
+            try:
+                still_playing = self._sleep_loop_active(previous)
+            except (RuntimeError, TypeError, ValueError):
+                still_playing = False
+            if not still_playing:
+                self._cancel_plan(awakened=True)
+                self._monitor.publish(state="用户打断了持续动画")
                 return
+            upcoming = self._plan_steps[0] if self._plan_steps else None
+            keep_held = bool(upcoming and upcoming.verb == "play"
+                             and upcoming.animation == previous
+                             and self._plan_deadline > time.monotonic())
+            if not keep_held:
+                self._step_held_animation = ""
+                self._end_sleep_loop(previous)
+        if not self._plan_steps:
             self._cancel_plan()
             self._monitor.publish(state="等待下一次决策",
                                   next_decision_at=time.time() + self._interval_seconds)
@@ -528,9 +669,23 @@ class AutonomyService(QObject):
                       and intent.verb == "play"
                       and intent.animation == SLEEP_ANIMATION
                       and self._plan_deadline > time.monotonic())
+        sustained_step = (not sleep_step and intent.verb == "play"
+                          and bool(intent.animation)
+                          and self._plan_deadline > time.monotonic())
         try:
-            executed = bool(self._begin_sleep_loop(SLEEP_ANIMATION) if sleep_step
-                            else self._execute(intent))
+            if keep_held:
+                # Same clip in next phase: leave its frame loop running without
+                # a stop/restart seam at every 11.5-second planner tick.
+                executed = True
+                if intent.say:
+                    self._execute(ActionIntent("say", say=intent.say,
+                                               emotion=intent.emotion))
+            elif sleep_step or sustained_step:
+                executed = bool(self._begin_sleep_loop(intent.animation))
+                if not executed and sustained_step:
+                    executed = bool(self._execute(intent))
+            else:
+                executed = bool(self._execute(intent))
             if executed and sleep_step:
                 self._sleep_held = True
                 self._activity_timer.start()
@@ -539,9 +694,26 @@ class AutonomyService(QObject):
                     # accompany it without replacing the animation.
                     self._execute(ActionIntent("say", say=intent.say,
                                                emotion=intent.emotion))
-            if executed and intent.verb == "play" and not sleep_step:
-                if intent not in self._accepted_repeats:
-                    self._accepted_repeats.append(intent)
+            elif executed and sustained_step:
+                # Hold this single step, not the entire activity: the timer
+                # releases it before executing the next AI-selected action.
+                try:
+                    held = bool(self._sleep_loop_active(intent.animation))
+                except (RuntimeError, TypeError, ValueError):
+                    held = False
+                if held:
+                    self._step_held_animation = intent.animation
+                    if intent.say:
+                        self._execute(ActionIntent("say", say=intent.say,
+                                                   emotion=intent.emotion))
+            if (executed and intent.verb == "play" and not sleep_step
+                    and intent.animation not in ONE_SHOT_CLIPS):
+                # Repeat the physical activity, never the sentence attached
+                # to its first performance. Otherwise an AI breakfast plan
+                # says exactly the same line every 11.5 seconds for minutes.
+                replay = silent_play_replay(intent)
+                if replay not in self._accepted_repeats:
+                    self._accepted_repeats.append(replay)
             if not executed and intent.say and intent.verb != "say":
                 # A failed movement must not silence an otherwise valid line.
                 fallback = ActionIntent(verb="say", say=intent.say,
@@ -554,14 +726,20 @@ class AutonomyService(QObject):
             log.warning("自主活动：执行器异常，跳过本步")
             result = "执行异常"
             executed = False
-        if executed:
+        if executed and intent.verb == "play" and not self._plan_repeating:
+            self._recent_clips.append(intent.animation)
+        if executed and not self._plan_repeating:
             self._history.append(action)
         self._monitor.publish(
-            record=True, busy=False,
-            state=(f"聊天触发活动：{self._plan_name}" if self._plan_from_chat
-                   else f"正在执行活动：{self._plan_name}")
-                  + f"（{self._plan_done}/{self._plan_total}）",
+            record=not self._plan_repeating, busy=self._busy,
+            state=(f"持续活动：{self._plan_name}（本地循环，无重复台词）"
+                   if self._plan_repeating else
+                   (f"聊天触发活动：{self._plan_name}" if self._plan_from_chat
+                    else f"正在执行活动：{self._plan_name}")
+                   + f"（{self._plan_done}/{self._plan_total}）"),
             last_action=action, last_result=result, last_error="",
+            active_animation=(intent.animation if executed and intent.verb == "play" else ""),
+            sustained=bool(executed and (sleep_step or sustained_step)),
             last_decision_at=time.time(), next_decision_at=None)
         if self._sleep_held:
             self._monitor.publish(state="正在持续睡眠（现有动画中段循环，可叫醒）")

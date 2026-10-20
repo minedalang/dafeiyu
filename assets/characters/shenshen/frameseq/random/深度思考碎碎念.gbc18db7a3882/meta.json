@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "深度思考碎碎念.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "bc18db7a3882388bf77a42b64955fb50cf498c73a795ad20299f0440e0390a1a"
+}

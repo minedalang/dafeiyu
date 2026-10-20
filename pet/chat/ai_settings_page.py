@@ -135,7 +135,12 @@ class _AiSettingsPage(QWidget):
         # process from the running pet. Read the pet's atomic local snapshot.
         self._autonomy_monitor.share_with(getattr(config, "dir", None))
         self._autonomy_monitor_labels = {}
-        for name in ("status", "model", "action", "result", "last", "next", "counts", "error", "history"):
+        self._loop_editor = None
+        self._edit_active_loop_button = QPushButton("调节当前持续动画的循环帧…", self)
+        self._edit_active_loop_button.setEnabled(False)
+        self._edit_active_loop_button.clicked.connect(self._open_activity_loop_editor)
+        for name in ("status", "activity_time", "model", "action", "result",
+                     "last", "next", "counts", "error", "history"):
             label = QLabel("—", self)
             label.setWordWrap(True)
             label.setTextFormat(Qt.TextFormat.PlainText)
@@ -296,6 +301,11 @@ class _AiSettingsPage(QWidget):
                 "这里显示后台自主决策服务的真实状态；聊天连接成功不等于自主决策已启动。",
                 self._autonomy_monitor_labels["status"], parent=self),
             SettingRow(
+                "autonomy_monitor_activity_time", "当前活动计时",
+                "显示持续活动的总时长、已进行时间、剩余时间和预计结束时刻；"
+                "活动中的 AI 阶段更新不会重置倒计时。结束后自动清空。",
+                self._autonomy_monitor_labels["activity_time"], parent=self),
+            SettingRow(
                 "autonomy_monitor_model", "决策模型",
                 "显示后台实际配置的模型，以及是否允许向模型发送桌面截图。",
                 self._autonomy_monitor_labels["model"], parent=self),
@@ -327,6 +337,11 @@ class _AiSettingsPage(QWidget):
                 "autonomy_monitor_history", "最近五次记录",
                 "包含 AI 动作意图和执行器反馈；不保存聊天内容和截图。",
                 self._autonomy_monitor_labels["history"], stacked=True, parent=self),
+            SettingRow(
+                "autonomy_monitor_loop", "循环帧调节",
+                "AI 正在执行持续活动时，可分别调整当前动画的开始/结束帧区间。"
+                "松开滑块即保存，约 1 秒内同步到正在运行的桌宠；关闭设置不会停止动画。",
+                self._edit_active_loop_button, parent=self),
         ], self))
         self.autonomy_enabled.toggled.connect(
             lambda _: self._autonomy_edited.add("autonomy_enabled"))
@@ -389,6 +404,32 @@ class _AiSettingsPage(QWidget):
         else:
             icon = "●"
         labels["status"].setText(f'{icon} {snapshot.get("state") or "未知"}')
+        activity_name = str(snapshot.get("activity_name") or "")
+        started_at = snapshot.get("activity_started_at")
+        ends_at = snapshot.get("activity_ends_at")
+        total_seconds = snapshot.get("activity_total_seconds")
+        if (enabled and activity_name and isinstance(started_at, (int, float))
+                and isinstance(ends_at, (int, float))
+                and isinstance(total_seconds, (int, float)) and total_seconds > 0
+                and ends_at >= started_at):
+            now = time.time()
+            elapsed = max(0, min(int(total_seconds), int(now - started_at)))
+            remaining = max(0, int(ends_at - now + 0.999))
+
+            def clock(seconds):
+                seconds = max(0, int(seconds))
+                hours, remainder = divmod(seconds, 3600)
+                minutes, secs = divmod(remainder, 60)
+                return (f"{hours:d}:{minutes:02d}:{secs:02d}" if hours
+                        else f"{minutes:02d}:{secs:02d}")
+
+            time_text = (f"{activity_name} · 已进行 {clock(elapsed)} / {clock(total_seconds)}"
+                         f" · 剩余 {clock(remaining)}")
+            time_text += (f"\n预计 {datetime.fromtimestamp(ends_at):%H:%M:%S} 结束"
+                          if remaining else "\n已到计划结束时间，等待当前动画收尾")
+        else:
+            time_text = "—（暂无持续活动）" if enabled else "—（未开启）"
+        labels["activity_time"].setText(time_text)
         model = str(snapshot.get("model") or "—")
         vision = "识屏开启" if snapshot.get("vision") else "识屏关闭"
         labels["model"].setText(f"{model} · {vision}")
@@ -419,6 +460,22 @@ class _AiSettingsPage(QWidget):
         labels["history"].setText("\n".join(
             f'{timestamp(item.get("at"))}  {item.get("action") or "—"}  ·  {item.get("result") or "—"}'
             for item in history if isinstance(item, dict)) or "暂无记录")
+        current = str(snapshot.get("active_animation") or "")
+        active = bool(snapshot.get("sustained")) and bool(current)
+        self._edit_active_loop_button.setEnabled(active)
+        self._edit_active_loop_button.setText(
+            f"调节「{current}」循环帧…" if active else "等待 AI 开始持续动画…")
+
+    def _open_activity_loop_editor(self):
+        """Non-modal so changes can be judged against the live desktop pet."""
+        snapshot = self._autonomy_monitor.snapshot()
+        animation = snapshot.get("active_animation") if snapshot.get("sustained") else None
+        if not isinstance(animation, str) or not animation:
+            return
+        from ..loop_editor import ActivityLoopEditor
+        editor = ActivityLoopEditor(animation, self)
+        self._loop_editor = editor  # Keep wrapper alive until closed.
+        editor.show()
 
     def appearance_rows(self) -> list[SettingRow]:
         """Controls visually owned by the Appearance page, persisted with AI settings.

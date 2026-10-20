@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "抽陀螺.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "693689d7b4d02ae8cda53f8d580de5087287fc339360dd20909342f566e969ba"
+}

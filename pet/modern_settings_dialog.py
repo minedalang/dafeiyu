@@ -1996,6 +1996,7 @@ class ModernSettingsDialog(QDialog):
                         "AI 决策状态面板",
                         claim(
                             "autonomy_monitor_status",
+                            "autonomy_monitor_activity_time",
                             "autonomy_monitor_model",
                             "autonomy_monitor_action",
                             "autonomy_monitor_result",
@@ -2004,6 +2005,7 @@ class ModernSettingsDialog(QDialog):
                             "autonomy_monitor_counts",
                             "autonomy_monitor_error",
                             "autonomy_monitor_history",
+                            "autonomy_monitor_loop",
                         ),
                     ),
                     ("系统通知", claim("system_notifications_enabled")),

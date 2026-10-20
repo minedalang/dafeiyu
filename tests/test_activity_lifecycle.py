@@ -9,6 +9,7 @@ from pathlib import Path
 from pet.activity_lifecycle import duration_seconds, sleep_pressure
 from pet.animation_loops import (
     advance_middle_loop, middle_frames, read_loop_percentages,
+    read_clip_loop_settings, save_clip_loop,
 )
 from pet.autonomy_intent import parse_activity_plan
 
@@ -86,6 +87,23 @@ class ActivityLifecycleTests(unittest.TestCase):
             settings.write_text('{"start_percent":90,"end_percent":30}',
                                 encoding="utf-8")
             self.assertEqual(read_loop_percentages(settings), (35.0, 67.0))
+
+    def test_per_animation_loop_settings_save_and_reset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "activity-loops.json"
+            save_clip_loop("写代码", 35, 45, path=settings)
+            save_clip_loop("吃午餐", 40, 60, path=settings)
+            self.assertEqual(read_clip_loop_settings(settings), {
+                "写代码": (35.0, 45.0), "吃午餐": (40.0, 60.0)})
+            save_clip_loop("写代码", None, None, path=settings)
+            self.assertEqual(read_clip_loop_settings(settings), {
+                "吃午餐": (40.0, 60.0)})
+            with self.assertRaises(ValueError):
+                save_clip_loop("吃午餐", 70, 45, path=settings)
+
+    def test_shorter_loop_uses_new_boundary(self):
+        self.assertEqual(middle_frames(240, start_percent=35,
+                                       end_percent=45), (84, 108))
 
 
 if __name__ == "__main__":

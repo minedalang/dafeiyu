@@ -1832,7 +1832,7 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
             return
         if name == getattr(self, "_autonomy_loop_clip_name", None):
             from .animation_loops import advance_middle_loop
-            if advance_middle_loop(self.movie) == "looped":
+            if advance_middle_loop(self.movie, name) == "looped":
                 return  # GIF 可同步发 frameChanged；回跳帧由内层回调显示
         is_last = n >= self.lib.frames(name) - 1  # n 是 0-based 源帧号：末帧判定不提前
         plan = self._move_plan

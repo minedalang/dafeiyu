@@ -826,7 +826,10 @@ class BehaviorController:
                 self._maybe_predict(sprite, st)
         elif st.state == STATE_HELD:
             if not st.held_fallback:
-                outcome = advance_middle_loop(self._clip_of(sprite))
+                # BehaviorController already exposes _bound_clip() for the
+                # current PetSprite clip. _clip_of was never defined and
+                # raised AttributeError on every held-activity tick.
+                outcome = advance_middle_loop(self._bound_clip(sprite), st.anim)
                 if outcome == "unavailable":
                     st.held_fallback = True
                     logger.debug("当前动画播放器不支持中段回跳；降级为整段循环")

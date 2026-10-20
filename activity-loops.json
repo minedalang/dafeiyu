@@ -1,0 +1,28 @@
+{
+  "clips": {
+    "原地小憩沉眠": {
+      "start_percent": 43.0,
+      "end_percent": 65.0
+    },
+    "吃早餐": {
+      "start_percent": 8.0,
+      "end_percent": 87.0
+    },
+    "吃晚餐": {
+      "start_percent": 35.0,
+      "end_percent": 84.0
+    },
+    "轻快记录": {
+      "start_percent": 25.0,
+      "end_percent": 68.0
+    },
+    "工作状态-思考冒泡": {
+      "start_percent": 19.0,
+      "end_percent": 67.0
+    },
+    "工作状态-清点归档": {
+      "start_percent": 23.0,
+      "end_percent": 63.0
+    }
+  }
+}

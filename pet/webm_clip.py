@@ -1248,6 +1248,10 @@ class WebMClip(QObject):
         # 丢句柄。
         self._unconfirmed_procs: list = []
         self._frame_index = 0
+        # Nonzero jumpToFrame uses ffmpeg's input seek on a *new* reader.
+        # The old implementation accepted only frame 0, so every custom
+        # middle-frame loop silently degraded to full-clip replay.
+        self._seek_start_frame = 0
         # 显示帧索引 = 素材源时间线上的 0-based 帧号（reader 打标，丢帧后
         # 仍一致）；与 1-based 播放计数 _frame_index 分离（P1 复审）。
         self._current_frame_index = 0
@@ -1841,7 +1845,7 @@ class WebMClip(QObject):
         self._reader_ready = ready_evt
         self._queue = queue.Queue(maxsize=8)
         self._frame_index = 0
-        self._current_frame_index = 0  # 新一轮播放从头计时（P1 复审）
+        self._current_frame_index = self._seek_start_frame
         self._ended_fired = False
         self._soft_parked = False
         self._natural_end_pending = False
@@ -1932,6 +1936,9 @@ class WebMClip(QObject):
 
     def stop(self) -> None:
         self._running = False
+        # A private middle-loop seek must not leak into the next normal bind
+        # of this cached clip (normal playback always starts at frame zero).
+        self._seek_start_frame = 0
         # 批8 圈边界软停：进程内循环的 reader 已到圈末（末帧/结束标记已交付，
         # _natural_end_pending）且仍存活——保留 ffmpeg 进程驻留等续圈
         # （start() re-arm），不再每圈杀进程重启。reader 驻留期间由背压
@@ -2092,8 +2099,11 @@ class WebMClip(QObject):
                 break
 
     def jumpToFrame(self, frame_index: int) -> bool:
-        # 本项目只需要回到首帧；完整 seek 通过重启 reader + 丢弃帧实现。
+        # A nonzero seek must restart decoding at that position: merely
+        # changing _current_frame_index leaves the WebM decoder at its old
+        # position. This happens only for user-selected sustained loops.
         if frame_index <= 0:
+            self._seek_start_frame = 0
             self.stop()
             self._frame_index = 0
             self._current_frame_index = 0  # 回到首帧 = 源时间线 0（P1 复审）
@@ -2115,7 +2125,16 @@ class WebMClip(QObject):
                 # 导致全量测试 access violation，已移除；预热职责仍归 library
                 # 既有调度器与 warm 闸门。）
             return True
-        return False
+        if not self._running or self._cleaned or imageio_ffmpeg is None:
+            return False
+        self._ensure_meta()
+        if frame_index >= self.frameCount() - 1:
+            return False
+        self.stop()
+        self._seek_start_frame = int(frame_index)
+        # Keep the last displayed image until the background decoder delivers
+        # the first sought frame; synchronous decode would freeze the UI.
+        return self.start()
 
     def _decode_first_qimage(self, gen: int | None = None):
         """解码首帧为 QImage（线程安全：不触碰 QPixmap/QTimer）。
@@ -2444,7 +2463,9 @@ class WebMClip(QObject):
             # 关机窗口期内新起的进程会以 0xc0000142 弹窗阻塞关机。
             logger.info('会话结束中，reader 拒绝拉起 ffmpeg: %s', self.path)
             return
-        feed = self._feed_source
+        # A shared feed starts at its publisher's position. It cannot satisfy
+        # a subscriber's private seek, so use this clip's own decoder instead.
+        feed = self._feed_source if self._seek_start_frame <= 0 else None
         if feed is not None:
             done = self._reader_feed(feed, stop_evt, generation, ready_evt)
             if done:
@@ -2517,15 +2538,20 @@ class WebMClip(QObject):
             # -readrate 随 playback_speed 缩放（P2-4：speed>1 时钉死 1 会把
             # 解码封顶在原生帧率，消费端 36fps 对解码端 24fps → 队列饥饿）；
             # speed<=1 恒为 1。背压（队列/管道写满）在 readrate 之上仍然生效。
+            seek_start = max(0, self._seek_start_frame)
             loop_frame_count = (
                 self._frame_count
-                if self._frame_count > 0 and self._frame_count_exact
+                if seek_start == 0 and self._frame_count > 0 and self._frame_count_exact
                 else 0
             )
             input_params = list(_FFMPEG_INPUT_PARAMS)
             if loop_frame_count > 0:
                 input_params += ['-stream_loop', '-1',
                                  '-readrate', str(max(1.0, self.playback_speed))]
+            elif seek_start > 0:
+                # Input-side -ss seeks at the media decoder, rather than
+                # decoding and discarding hundreds of RGBA frames in Python.
+                input_params += ['-ss', f'{seek_start / max(self._fps, 1.0):.6f}']
             # 批11-B1：记录当前 ffmpeg 进程出生时刻并清零圈数（圈边界回收
             # 判定/日志用；reader 线程写，Reader 读同线程）。只在此处记录一次，
             # feed 路径（不拉起 ffmpeg）不会走到这里，_reader_born_at 保持 0。
@@ -2592,9 +2618,10 @@ class WebMClip(QObject):
                 # reader 只做每帧回调（逐帧读当前 sink——续圈后 facade 重建
                 # 会话换 sink，不换 reader/进程仍发布到新会话）；节拍/收尾由
                 # facade 在 GUI 侧驱动（P1-2），reader 不写标记。
-                on_frame=self._mirror_frame_to_sink,
+                on_frame=self._mirror_frame_to_sink if seek_start == 0 else None,
                 loop_frame_count=loop_frame_count,
                 on_loop_boundary=_on_loop_boundary,
+                frame_offset=seek_start,
             )
             if loop_end['reported']:
                 return  # 圈边界已交付结束标记，finally 照常收尾杀进程
@@ -2919,7 +2946,7 @@ class WebMClip(QObject):
     def _stamp_source_indices(frames, q, is_stopped, timeout: float = 0.2,
                               throttled=None, on_frame=None,
                               loop_frame_count: int = 0,
-                              on_loop_boundary=None) -> None:
+                              on_loop_boundary=None, frame_offset: int = 0) -> None:
         """reader 线程把解码帧逐帧打上素材源时间线帧号后入队。
 
         队列项 = (RGBA 字节, 源时间线 0-based 帧号)。返回帧号即
@@ -2967,7 +2994,8 @@ class WebMClip(QObject):
                 mem_debug.bump('frames_dec')  # 取证：reader 侧解码帧数
             if is_stopped():
                 break
-            timeline_idx = (src_idx % loop_frame_count) if loop_frame_count > 0 else src_idx
+            timeline_idx = ((src_idx % loop_frame_count) if loop_frame_count > 0
+                            else frame_offset + src_idx)
             if on_frame is not None:
                 on_frame(frame, timeline_idx)
             if perfstats.ENABLED:
