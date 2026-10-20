@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "中秋赏月吃月饼.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "3f64003262d3f129470721495695ecd231795d859693a748914c02c6e3883a3a"
+}

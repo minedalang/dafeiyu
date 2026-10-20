@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "点击回应-挠痒咯咯笑.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "f228279219f4084323ca1bfef1604f7c77bb3f505d45a8d1747b5ac3f9f2393b"
+}
