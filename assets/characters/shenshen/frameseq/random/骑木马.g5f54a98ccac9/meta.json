@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "骑木马.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "5f54a98ccac97eac000d799043411f4fc0732096dc51a2ad766552737578f313"
+}

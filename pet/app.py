@@ -619,7 +619,10 @@ class PetInstance:
         # 每日一签：菜单「抽支签」→ 出当天的签；on_user_interaction 供
         # 窗口在"用户点了桌宠"时回调（当天没看才提示一行）。
         win.on_divination_draw = self._slot_wrap(self.shell.trigger_divination_draw)
-        win.on_user_interaction = self._slot_wrap(self.shell.divination_hint_on_interaction)
+        win.on_user_interaction = self._slot_wrap(self.shell._on_legacy_pet_clicked)
+        win.on_ai_click_enabled = self._slot_wrap(
+            lambda: bool(getattr(self.shell, "_autonomy", None)
+                         and self.shell._autonomy.enabled))
         win.on_restore_fun_windows = restore_ojingjing_windows
         win.on_hidden = self._slot_wrap(self._notify_pet_hidden)
         # 4.4b：窗级「退出这只」恒注入（多窗常开化；最后一窗退出即全进程退出，
@@ -1223,7 +1226,8 @@ class PetInstance:
         except Exception:
             logging.exception("同步桌宠自主发言到会话记录失败")
 
-    def _show_proactive_reply_action(self, reply: str, *, timeout_ms: int = 45000) -> bool:
+    def _show_proactive_reply_action(self, reply: str, *, timeout_ms: int = 45000,
+                                     allow_quiet: bool = False) -> bool:
         """Turn spontaneous screen-reading speech into a replyable bubble."""
         host = self.win or getattr(self.shell, "_overlay_shell", None)
         if host is None:
@@ -1231,7 +1235,7 @@ class PetInstance:
         from .window_alerts import bubble_blocked, quiet_blocked
 
         # Respect user quiet hours / fullscreen and existing approval bubbles.
-        if quiet_blocked(host) or bubble_blocked(host):
+        if (not allow_quiet and quiet_blocked(host)) or bubble_blocked(host):
             return False
         if (getattr(host, "_alert_current", None) is not None
                 or getattr(host, "_sticky_bubble_active", False)):
@@ -2050,7 +2054,7 @@ class AppShell:
             return ()
         from .chat.session_store import SessionStore
 
-        character_id = str(inst._identity_config().get(
+        character_id = str(self._identity_config().get(
             "character", catalog.DEFAULT_CHARACTER))
         instance_id = str(getattr(inst.config, "instance_id", ""))
         if instance_id == "slot-0":
@@ -2078,12 +2082,54 @@ class AppShell:
         if inst is not None:
             inst.sync_pet_speech(text)
 
+    def _autonomy_persona(self) -> str:
+        """Resolve exactly the same character + editable prompt as AI chat."""
+        from .chat.prompt import PromptBuilder
+
+        # _identity_config belongs to AppShell, not PetInstance. Calling it on
+        # instance raised AttributeError and silently aborted ALL click calls
+        # before any HTTP request could be sent.
+        character_id = str(self._identity_config().get(
+            "character", catalog.DEFAULT_CHARACTER))
+        builder = PromptBuilder(Path(__file__).resolve().parents[1] / "assets" / "characters")
+        return builder.effective_system_prompt(self.config.chat_settings(), character_id)
+
+    def _autonomy_can_speak(self, trigger: str) -> bool:
+        """Ambient lines respect DND; a user-clicked reply can speak in DND."""
+        from .window_alerts import bubble_blocked, quiet_blocked
+
+        host = self.win or getattr(self, "_overlay_shell", None)
+        if host is None or bubble_blocked(host):
+            return False
+        if trigger != "click" and quiet_blocked(host):
+            return False
+        if (getattr(host, "_alert_current", None) is not None
+                or getattr(host, "_sticky_bubble_active", False)):
+            return False
+        return True
+
+    def _autonomy_user_clicked(self) -> None:
+        """AI click reply; physical click animation is controlled elsewhere."""
+        service = getattr(self, "_autonomy", None)
+        if service is not None and service.enabled:
+            service.queue_user_click()
+
+    def _on_legacy_pet_clicked(self) -> None:
+        """Legacy hook keeps the daily fortune hint and adds optional AI text."""
+        self.divination_hint_on_interaction()
+        win = self.win
+        if win is not None and not getattr(win, "click_show_balance", False):
+            self._autonomy_user_clicked()
+
     def _present_autonomy_speech(self, text: str, fallback) -> bool:
         """Invite a short reply for spontaneous lines; chat-triggered replies stay in chat."""
         inst = getattr(self, "instance", None)
         service = getattr(self, "_autonomy", None)
-        if inst is not None and not getattr(service, "_plan_from_chat", False):
-            return inst._show_proactive_reply_action(text, timeout_ms=14000)
+        clicked = bool(getattr(service, "_speaking_for_click", False))
+        if inst is not None and (clicked or not getattr(service, "_plan_from_chat", False)):
+            return inst._show_proactive_reply_action(
+                text, timeout_ms=8500 if clicked else 14000,
+                allow_quiet=clicked)
         return bool(fallback())
 
     def _sync_autonomy_service(self) -> None:
@@ -2106,6 +2152,8 @@ class AppShell:
             service = self._autonomy = AutonomyService(
                 self.config, self._autonomy_observe, self._autonomy_execute,
                 recent_dialogue=self._recent_autonomy_dialogue,
+                persona=self._autonomy_persona,
+                can_speak=self._autonomy_can_speak,
                 prefer_external_vision=(watcher.is_running if watcher is not None
                                         else None),
                 begin_sleep_loop=self._autonomy_begin_sleep_loop,

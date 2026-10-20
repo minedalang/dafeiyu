@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "轻快摇摆舞.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "c621d00e1b959b991df8fc420e409b569e768fad7f75d1fb489375d101fee630"
+}

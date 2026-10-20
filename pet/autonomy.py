@@ -11,6 +11,7 @@ import base64
 import copy
 import json
 import logging
+import random
 import threading
 import time
 from collections import deque
@@ -23,6 +24,7 @@ from .autonomy_intent import (
     silent_play_replay,
 )
 from .autonomy_monitor import get_autonomy_monitor
+from .autonomy_speech import build_speech_messages, parse_speech_response
 from .activity_lifecycle import (
     SLEEP_ANIMATION, WAKE_ANIMATIONS, duration_seconds, is_night, sleep_pressure,
 )
@@ -36,13 +38,18 @@ def _request_intent(provider, observation: dict, animations: tuple[str, ...],
                     recent: tuple[str, ...], recent_activities: tuple[str, ...],
                     screen_enabled: bool, cancelled, *,
                     recent_dialogue: tuple[dict, ...] = (),
-                    visual_frame: bytes | None = None):
+                    visual_frame: bytes | None = None,
+                    persona: str = ""):
     """Perform one bounded Chat Completions call; never run on Qt's GUI thread."""
     from .chat.providers import OpenAICompatibleProvider, thinking_payload
 
     messages = build_decision_messages(
         observation, animations=animations, recent_actions=recent,
         recent_activities=recent_activities, recent_dialogue=recent_dialogue)
+    if persona:
+        messages[0]["content"] += (
+            "\n【角色个性设定：请遵守下列说话语气与身份，但仍严格按上面的 JSON 规则决策】\n"
+            + persona[:1600])
     p = copy.copy(provider)
     # A multimodal multi-step plan needs more time/output than one small action.
     p.timeout = min(float(p.timeout), 35.0)
@@ -91,19 +98,74 @@ def _request_intent(provider, observation: dict, animations: tuple[str, ...],
     return parse_activity_plan(answer, available_animations=animations)
 
 
+def _request_speech(provider, observation: dict, *, trigger: str,
+                    persona: str, dialogue: tuple[dict, ...],
+                    recent_lines: tuple[str, ...], cancelled,
+                    visual_frame: bytes | None = None) -> str | None:
+    """One bounded LLM request to speak (or elect silence)."""
+    from .chat.providers import OpenAICompatibleProvider, thinking_payload
+
+    if cancelled.is_set():
+        return None
+    p = copy.copy(provider)
+    p.timeout = min(float(p.timeout), 25.0)
+    p.max_tokens = 180
+    messages = build_speech_messages(
+        observation, trigger=trigger, persona=persona,
+        recent_dialogue=dialogue, recent_speech=recent_lines)
+    if visual_frame is not None:
+        from .vision import resolve_vision_model
+
+        p.model = resolve_vision_model(p)
+        if not p.vision_same_as_chat:
+            p.base_url = p.vision_base_url or p.base_url
+            p.api_key = p.vision_api_key or p.api_key
+        messages[-1]["content"] = [
+            {"type": "text", "text": messages[-1]["content"]},
+            {"type": "image_url", "image_url": {
+                "url": "data:image/jpeg;base64," + base64.b64encode(visual_frame).decode("ascii")}},
+        ]
+    payload = {
+        "model": p.model,
+        "messages": messages,
+        "stream": False, "max_tokens": 180, "temperature": 0.65,
+    }
+    payload.update(thinking_payload(p, force_disable=True))
+    with OpenAICompatibleProvider()._open(payload, p, "application/json") as response:
+        raw = response.read(16 * 1024 + 1)
+    if len(raw) > 16 * 1024:
+        raise ValueError("speech response exceeds limit")
+    data = json.loads(raw)
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("speech response has no choices")
+    message = choices[0].get("message", {})
+    answer = message.get("content") if isinstance(message, dict) else None
+    if isinstance(answer, list):
+        answer = "".join(str(item.get("text", "")) for item in answer
+                         if isinstance(item, dict) and item.get("type") == "text")
+    if cancelled.is_set():
+        return None
+    return parse_speech_response(answer)
+
+
 class AutonomyService(QObject):
     """Single process-level autonomy loop, enabled explicitly in AI settings."""
 
     decision_ready = Signal(int, object, str)
+    speech_ready = Signal(int, object, str)
 
     def __init__(self, config, observe, execute, parent=None, *,
                  recent_dialogue=None, prefer_external_vision=None,
-                 begin_sleep_loop=None, sleep_loop_active=None, end_sleep_loop=None):
+                 begin_sleep_loop=None, sleep_loop_active=None, end_sleep_loop=None,
+                 persona=None, can_speak=None):
         super().__init__(parent)
         self._config = config
         self._observe = observe
         self._execute = execute
         self._get_dialogue = recent_dialogue or (lambda: ())
+        self._get_persona = persona or (lambda: "")
+        self._can_speak = can_speak or (lambda _trigger: True)
         self._prefer_external_vision = prefer_external_vision or (lambda: False)
         self._begin_sleep_loop = begin_sleep_loop or (lambda _animation: False)
         self._sleep_loop_active = sleep_loop_active or (lambda _animation: False)
@@ -122,6 +184,9 @@ class AutonomyService(QObject):
         self._life_timer = QTimer(self)
         self._life_timer.setInterval(30_000)
         self._life_timer.timeout.connect(self._update_life)
+        self._speech_timer = QTimer(self)
+        self._speech_timer.setInterval(15_000)
+        self._speech_timer.timeout.connect(self._speech_tick)
         self._plan_active = False
         self._plan_steps = deque()
         self._plan_name = ""
@@ -154,6 +219,14 @@ class AutonomyService(QObject):
         self._current_request_replan = False
         self._replan_request_revision = -1
         self._recent_clips = deque(maxlen=8)
+        self._speech_busy = False
+        self._speech_serial = 0
+        self._speech_active = -1
+        self._speech_last_at = 0.0
+        self._speech_recent = deque(maxlen=5)
+        self._speech_next_at = time.monotonic() + random.uniform(55, 100)
+        self._last_click_request_at = float("-inf")
+        self._speaking_for_click = False
         # One most-recent foreground-window frame, kept in RAM only. The
         # observer and autonomous planner must not each charge an API request.
         self._pending_visual = None
@@ -162,6 +235,7 @@ class AutonomyService(QObject):
         self._monitor.share_with(getattr(config, "dir", None), writer=True)
         self._life = WhaleLife(getattr(config, "dir", None))
         self.decision_ready.connect(self._accept_decision)
+        self.speech_ready.connect(self._accept_speech)
         self.apply_config()
 
     @property
@@ -188,18 +262,26 @@ class AutonomyService(QObject):
             self._cancelled = threading.Event()
             self._cancel_plan()
             self._pending_visual = None
+            self._speech_active = -1
+            self._speech_busy = False
+            self._speech_next_at = time.monotonic() + random.uniform(55, 100)
         if not enabled:
             self._timer.stop()
             self._life_timer.stop()
+            self._speech_timer.stop()
             self._cancel_plan()
         else:
             self._timer.start(interval)
             self._life_timer.start()
+            self._speech_timer.start()
             if not was_enabled:
                 # Explicitly enabling is consent for the first non-visual call.
                 QTimer.singleShot(2500, self._tick)
         self._monitor.publish(
             enabled=enabled, vision=screen, interval_seconds=self._interval_seconds,
+            speech_status="待机" if enabled else "已关闭",
+            speech_next_at=(time.time() + max(0, self._speech_next_at - time.monotonic())
+                            if enabled else None),
             life_state=self._life.snapshot(),
             busy=self._busy if enabled else False,
             state=("已关闭" if not enabled else
@@ -217,11 +299,15 @@ class AutonomyService(QObject):
         self._cancelled.set()
         self._timer.stop()
         self._life_timer.stop()
+        self._speech_timer.stop()
+        self._speech_active = -1
+        self._speech_busy = False
         self._cancel_plan()
         self._pending_user_text = ""
         self._pending_visual = None
         self._monitor.publish(
-            enabled=False, busy=False, state="已停止", next_decision_at=None)
+            enabled=False, busy=False, state="已停止", next_decision_at=None,
+            speech_status="已停止", speech_next_at=None)
 
     def _cancel_plan(self, *, awakened: bool = False) -> None:
         """Cancel queued AI steps without interrupting user-controlled animation."""
@@ -312,6 +398,8 @@ class AutonomyService(QObject):
         self._life.user_chatted()
         self._monitor.publish(life_state=self._life.snapshot())
         self._pending_user_text = message
+        # A real conversation takes precedence over the next casual remark.
+        self._speech_next_at = time.monotonic() + random.uniform(180, 360)
         self._cancel_plan(awakened=True)
         self._monitor.publish(state="收到聊天消息，准备选择对应动作",
                               next_decision_at=None)
@@ -320,9 +408,212 @@ class AutonomyService(QObject):
         if not self._busy:
             QTimer.singleShot(0, self._tick)
 
+    def queue_user_click(self) -> None:
+        """React to a genuine left click; the click animation runs as before."""
+        if not self._enabled:
+            return
+        now = time.monotonic()
+        if now - self._last_click_request_at < 12:
+            return  # Rapid clicking must not spam the model or pop many bubbles.
+        self._last_click_request_at = now
+        self._speech_next_at = now + random.uniform(180, 360)
+        self._monitor.publish(speech_status="收到点击，等待 AI 判断",
+                              speech_next_at=time.time() + (self._speech_next_at - now))
+        # The normal animation/click sounds should already be visible before
+        # the optional text is prepared; no animation is changed here.
+        QTimer.singleShot(850, lambda: self._try_click_speech(0))
+
+    def _try_click_speech(self, attempt: int) -> None:
+        if not self._enabled:
+            return
+        if self._speech_busy or self._busy:
+            if attempt < 24:
+                self._monitor.publish(speech_status="AI 正在处理其他请求，点击已排队")
+                QTimer.singleShot(1500, lambda: self._try_click_speech(attempt + 1))
+            else:
+                self._monitor.publish(speech_status="点击等待超时；请再点一次")
+            return
+        if self._sleep_held:
+            try:
+                still_asleep = self._sleep_loop_active(SLEEP_ANIMATION)
+            except (RuntimeError, TypeError, ValueError):
+                still_asleep = False
+            if still_asleep:
+                return  # Click didn't actually wake the pet.
+            self._cancel_plan(awakened=True)
+        self._start_speech("click")
+
+    def _speech_tick(self) -> None:
+        """Independently consider speaking during a long, otherwise silent plan."""
+        if (not self._enabled or not self._plan_active or self._sleep_held
+                or self._plan_activity == "nap"
+                or self._step_held_animation == SLEEP_ANIMATION
+                or time.monotonic() < self._speech_next_at):
+            return
+        if self._speech_busy or self._busy:
+            return  # Keep a single concurrent model request per process.
+        if time.monotonic() - self._speech_last_at < 120:
+            return
+        pending = self._pending_visual
+        trigger = ("window" if pending is not None
+                   and time.monotonic() - pending[0] <= 30 else "ambient")
+        self._start_speech(trigger)
+
+    def _start_speech(self, trigger: str) -> None:
+        if not self._enabled or self._busy or self._speech_busy:
+            return
+        if trigger != "click" and (not self._plan_active or self._sleep_held
+                                   or self._plan_activity == "nap"
+                                   or self._step_held_animation == SLEEP_ANIMATION):
+            return
+        visual_frame = None
+        visual_context = None
+        if trigger == "window":
+            pending = self._pending_visual
+            if pending is None or time.monotonic() - pending[0] > 30:
+                return
+            _at, visual_frame, process, activity = pending
+            visual_context = {"process": process, "activity": activity,
+                              "source": "whitelisted_foreground_window"}
+        try:
+            if not self._can_speak(trigger):
+                self._monitor.publish(speech_status="气泡被占用或设置窗口限制显示，未发起请求")
+                return
+            observed = self._observe()
+            if observed is None:
+                self._monitor.publish(speech_status="桌宠不可见或正在拖动，未发起请求")
+                return
+            world, _animations = observed
+            settings = self._config.chat_settings()
+            provider = settings.active_config
+            provider.api_key = self._config.resolve_api_key(provider)
+            if visual_frame is not None and not provider.vision_same_as_chat:
+                from .chat.models import SecretStore
+                provider.vision_api_key = (
+                    SecretStore().get(provider.vision_api_key_ref)
+                    or provider.vision_api_key or provider.api_key)
+            if not provider.model or not provider.base_url:
+                self._monitor.publish(speech_status="未配置可用模型，未发起请求")
+                return
+            persona = str(self._get_persona() or "")[:1600]
+            dialogue = tuple(self._get_dialogue())
+        except Exception as exc:
+            log.warning("主动搭话：准备失败（%s）", type(exc).__name__)
+            self._monitor.publish(
+                speech_status=f"搭话准备失败：{type(exc).__name__}",
+                last_error=type(exc).__name__)
+            return
+        world = {
+            **world,
+            "current_activity": self._plan_name if self._plan_active else "",
+            "life_state": self._life.snapshot(),
+            "sleep_state": {"night": is_night(), "pressure": sleep_pressure()},
+        }
+        if visual_context is not None:
+            world["foreground_observation"] = visual_context
+            self._pending_visual = None
+        now = time.monotonic()
+        self._speech_next_at = now + random.uniform(180, 360)
+        self._speech_busy = True
+        self._speech_serial += 1
+        self._speech_active = request_id = self._speech_serial
+        self._monitor.publish(
+            model=str(provider.model), last_request_at=time.time(),
+            speech_status=("点击：AI 正在决定如何回应" if trigger == "click" else
+                           "AI 正在决定是否主动搭话"),
+            speech_next_at=time.time() + (self._speech_next_at - now),
+            requests=self._monitor.snapshot()["requests"] + 1,
+        )
+        thread = threading.Thread(
+            target=self._speech_worker,
+            args=(request_id, self._generation, self._cancelled, provider, world,
+                  trigger, persona, dialogue, tuple(self._speech_recent), visual_frame),
+            name="pet-autonomy-speech", daemon=True)
+        try:
+            thread.start()
+        except RuntimeError:
+            self._speech_busy = False
+            self._monitor.publish(last_error="SpeechThreadError", speech_status="搭话线程启动失败")
+
+    def _speech_worker(self, request_id, generation, cancelled, provider, world,
+                       trigger, persona, dialogue, recent_lines, visual_frame=None):
+        line = None
+        error_kind = ""
+        try:
+            line = _request_speech(
+                provider, world, trigger=trigger, persona=persona,
+                dialogue=dialogue, recent_lines=recent_lines,
+                cancelled=cancelled, visual_frame=visual_frame)
+        except Exception as exc:  # Model/proxy errors stay outside the GUI thread.
+            error_kind = type(exc).__name__
+            status = getattr(exc, "status", None)
+            if isinstance(status, int) and 400 <= status <= 599:
+                error_kind += f" (HTTP {status})"
+        try:
+            self.speech_ready.emit(request_id, (generation, trigger, line), error_kind)
+        except RuntimeError:
+            pass
+
+    def _accept_speech(self, request_id: int, result, error_kind: str) -> None:
+        if request_id != self._speech_active:
+            return
+        self._speech_busy = False
+        generation, trigger, line = result
+        if not self._enabled or generation != self._generation:
+            return
+        completed = self._monitor.snapshot()["completed"] + 1
+        if self._pending_user_text:
+            self._monitor.publish(completed=completed, speech_status="用户正在聊天，暂不搭话")
+            QTimer.singleShot(0, self._tick)
+            return
+        if error_kind:
+            log.warning("主动搭话：请求失败（%s）", error_kind)
+            self._monitor.publish(completed=completed, last_error=error_kind,
+                                  speech_status="搭话请求失败，不打断动画")
+            return
+        if not line:
+            self._monitor.publish(completed=completed, last_error="",
+                                  speech_status="AI 选择先安静陪伴")
+            return  # AI deliberately chose silence, with no phantom bubble.
+        if any(line == previous for previous in self._speech_recent):
+            self._monitor.publish(completed=completed)
+            return
+        try:
+            dialogue = tuple(self._get_dialogue())
+            if any(line == str(entry.get("text", "")).strip()
+                   for entry in dialogue[-5:] if isinstance(entry, dict)):
+                self._monitor.publish(completed=completed)
+                return
+            if not self._can_speak(trigger):
+                self._monitor.publish(completed=completed)
+                return
+            self._speaking_for_click = trigger == "click"
+            shown = bool(self._execute(ActionIntent("say", say=line)))
+        except Exception as exc:
+            log.warning("主动搭话：展示失败（%s）", type(exc).__name__)
+            shown = False
+        finally:
+            self._speaking_for_click = False
+        if shown:
+            self._speech_recent.append(line)
+            self._speech_last_at = time.monotonic()
+        self._monitor.publish(
+            record=shown, completed=completed, last_error="",
+            speech_status="点击已回应" if shown and trigger == "click" else
+                          "自主搭话已显示" if shown else "当前无法显示气泡",
+            last_spoken_at=time.time() if shown else self._monitor.snapshot().get("last_spoken_at"),
+            last_decision_at=time.time(),
+            last_action="say（点击回应）" if trigger == "click" else "say（自主搭话）",
+            last_result="已显示" if shown else "气泡未显示",
+        )
+        # If a sleep click cancelled the plan, resume normal decisions after
+        # the brief speech without waiting indefinitely for the periodic tick.
+        if not self._plan_active and not self._busy:
+            QTimer.singleShot(1500, self._tick)
+
     def queue_visual_observation(self, jpeg: bytes, *, process: str = "",
                                  activity: str = "") -> bool:
-        """Accept one already-authorized window image; never call a second LLM.
+        """Accept one already-authorized window image; never capture again here.
 
         Invoked on Qt's thread, after the proactive watcher's window whitelist,
         foreground checks and cooldown have passed. Frames expire quickly and
@@ -335,6 +626,12 @@ class AutonomyService(QObject):
         self._monitor.publish(state="观察到窗口变化，等待统一 AI 决策")
         if not self._busy and not self._plan_active:
             QTimer.singleShot(0, self._tick)
+        elif (self._plan_active and not self._sleep_held and not self._speech_busy
+              and not self._busy and time.monotonic() >= self._speech_next_at
+              and time.monotonic() - self._speech_last_at >= 120):
+            # A multi-minute activity no longer swallows authorized window
+            # changes: one optional speech decision, no animation replacement.
+            QTimer.singleShot(0, lambda: self._start_speech("window"))
         return True
 
     def _tick(self, *, replan: bool = False):
@@ -352,7 +649,7 @@ class AutonomyService(QObject):
             return  # Finish the current local sequence before another API call.
         if not replan:
             self._monitor.publish(next_decision_at=time.time() + self._interval_seconds)
-        if self._busy:
+        if self._busy or self._speech_busy:
             return
         try:
             observed = self._observe()
@@ -430,6 +727,10 @@ class AutonomyService(QObject):
             log.warning("自主决策：近期对话读取失败")
             dialogue = ()
         try:
+            persona = str(self._get_persona() or "")[:1600]
+        except Exception:
+            persona = ""
+        try:
             # When both vision switches are enabled, the proactive watcher
             # owns capture and supplies whitelisted frames. No full-screen
             # snapshot or independent visual model call in that mode.
@@ -461,7 +762,7 @@ class AutonomyService(QObject):
             args=(request_id, generation, cancel, provider, world,
                   tuple(animations), tuple(self._history),
                   tuple(self._recent_activities), take_own_screen,
-                  dialogue, visual_frame),
+                  dialogue, visual_frame, persona),
             name="pet-autonomy-llm", daemon=True)
         try:
             thread.start()
@@ -474,14 +775,14 @@ class AutonomyService(QObject):
 
     def _run_worker(self, request_id, generation, cancel, provider, world,
                     animations, recent, recent_activities, vision,
-                    dialogue=(), visual_frame=None):
+                    dialogue=(), visual_frame=None, persona=""):
         intent = None
         error_kind = ""
         try:
             intent = _request_intent(provider, world, animations, recent,
                                      recent_activities, vision, cancel,
                                      recent_dialogue=dialogue,
-                                     visual_frame=visual_frame)
+                                     visual_frame=visual_frame, persona=persona)
         except Exception as exc:  # noqa: BLE001 - network/proxy/provider boundary
             # Never log raw HTTP errors, request URLs, screenshots or API Keys.
             error_kind = type(exc).__name__
@@ -768,6 +1069,8 @@ class AutonomyService(QObject):
             self._life_activity_started = True
             self._life.start_activity("social")
             self._monitor.publish(life_state=self._life.snapshot())
+        if executed and intent.say and not self._plan_repeating:
+            self._speech_last_at = time.monotonic()
         if executed and not self._plan_repeating:
             self._history.append(action)
         self._monitor.publish(

@@ -47,6 +47,10 @@
     "工作状态-忙碌点按": {
       "start_percent": 46.0,
       "end_percent": 66.0
+    },
+    "下五子棋": {
+      "start_percent": 29.0,
+      "end_percent": 57.0
     }
   }
 }

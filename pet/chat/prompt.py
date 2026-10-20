@@ -51,9 +51,10 @@ class PromptBuilder:
     def __init__(self,characters_root=None): self.characters_root=Path(characters_root) if characters_root else None
     def effective_system_prompt(self,settings,character_id,role_prompt=None):
         if role_prompt and role_prompt.strip(): return role_prompt.strip()
+        from ..autonomy_speech import combine_persona
         if self.characters_root:
             prompt=load_character_prompt(self.characters_root,character_id)
-            if prompt.strip(): return prompt.strip()
+            if prompt.strip(): return combine_persona(prompt, settings.default_system_prompt)
         return settings.default_system_prompt.strip()
     def build_messages(self,settings,character_id,history,user_text,role_prompt=None,now=None):
         """时间感知：历史用户消息前加发送时间标记，system 末尾附当前时间与距上条消息的间隔。

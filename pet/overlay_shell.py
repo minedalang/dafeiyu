@@ -3258,9 +3258,18 @@ class OverlayShell(QObject):
             if callable(handler):
                 # 余额气泡锚在**被点那一只**的宿主上（主宠 = 壳本身，行为不变）
                 handler(self._sprite_host(target))
-        elif bool(cfg.get("click_show_self_talk", False)):
-            if self._show_click_self_talk(click_name, target):
-                self._schedule_self_talk_for(target, after_display=True)
+        else:
+            shell = getattr(self._instance, "shell", None)
+            autonomy = getattr(shell, "_autonomy", None)
+            # In AI mode, avoid playing a canned line and then overlapping it
+            # with the AI-selected reply. The fixed click animation stays.
+            if autonomy is not None and autonomy.enabled and target is self.sprite:
+                clicked = getattr(shell, "_autonomy_user_clicked", None)
+                if callable(clicked):
+                    clicked()
+            elif bool(cfg.get("click_show_self_talk", False)):
+                if self._show_click_self_talk(click_name, target):
+                    self._schedule_self_talk_for(target, after_display=True)
 
     # ---- 音乐自动唱歌（M5f：window_alerts host 形函数复用 + 定时器 + 热改）----
     def _init_music_sing(self) -> None:

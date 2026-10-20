@@ -1997,6 +1997,7 @@ class ModernSettingsDialog(QDialog):
                         claim(
                             "autonomy_monitor_status",
                             "autonomy_monitor_activity_time",
+                            "autonomy_monitor_speech",
                             "autonomy_monitor_life",
                             "autonomy_monitor_life_events",
                             "autonomy_monitor_model",

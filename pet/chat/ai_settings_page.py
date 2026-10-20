@@ -139,7 +139,7 @@ class _AiSettingsPage(QWidget):
         self._edit_active_loop_button = QPushButton("调节当前持续动画的循环帧…", self)
         self._edit_active_loop_button.setEnabled(False)
         self._edit_active_loop_button.clicked.connect(self._open_activity_loop_editor)
-        for name in ("status", "activity_time", "life", "life_events", "model",
+        for name in ("status", "activity_time", "life", "life_events", "speech", "model",
                      "action", "result", "last", "next", "counts", "error", "history"):
             label = QLabel("—", self)
             label.setWordWrap(True)
@@ -249,7 +249,10 @@ class _AiSettingsPage(QWidget):
             SettingRow("api_url", "API 地址", "OpenAI Chat Completions 兼容服务地址。", self.url),
             SettingRow("model", "模型", "发送请求时使用的模型标识。", self.model),
             SettingRow("api_key", "API Key", "凭据优先保存到系统钥匙串。", self.key),
-            SettingRow("system_prompt", "System Prompt", "定义桌宠对话时的身份、语气和行为。", self.prompt, stacked=True),
+            SettingRow("system_prompt", "小鲸鱼性格 / 说话风格 (System Prompt)",
+                       "定义口吻、昵称、爱好、与主人的相处方式；对话、点击回应和自主搭话共用。"
+                       "如果角色素材自带专属人设，这里的设置会补充并优先约束说话风格。",
+                       self.prompt, stacked=True),
             SettingRow("connection_test", "连接测试", self.test_result.text(), self.test_button),
         ], self))
         thinking_web_rows = [
@@ -306,6 +309,11 @@ class _AiSettingsPage(QWidget):
                 "活动中的 AI 阶段更新不会重置倒计时。结束后自动清空。",
                 self._autonomy_monitor_labels["activity_time"], parent=self),
             SettingRow(
+                "autonomy_monitor_speech", "AI 搭话与点击回应",
+                "持续活动时独立、低频判断要不要搭话；左键点击保留原动画并可 AI 回应。"
+                "睡觉或免打扰时不会无故主动打扰，点击主动互动仍可回应。每次模型判断另计 API 用量。",
+                self._autonomy_monitor_labels["speech"], parent=self),
+            SettingRow(
                 "autonomy_monitor_life", "小鲸鱼生命状态",
                 "这些状态每 30 秒在本地更新，重启后也会保留；饥饿和困意越高越需要照顾，"
                 "精力和心情则越高越好。模型读取此状态做决策，但不会每 30 秒调用 API。",
@@ -336,7 +344,7 @@ class _AiSettingsPage(QWidget):
                 self._autonomy_monitor_labels["next"], parent=self),
             SettingRow(
                 "autonomy_monitor_counts", "请求统计",
-                "仅统计本次运行的 AI 自主动作请求，不含 AI 聊天和独立的“主动识屏”搭话功能。",
+                "统计本次运行的自主动作规划、阶段更新与独立搭话/点击判断请求；不含普通 AI 聊天。",
                 self._autonomy_monitor_labels["counts"], parent=self),
             SettingRow(
                 "autonomy_monitor_error", "最近错误",
@@ -439,6 +447,14 @@ class _AiSettingsPage(QWidget):
         else:
             time_text = "—（暂无持续活动）" if enabled else "—（未开启）"
         labels["activity_time"].setText(time_text)
+        speech_state = str(snapshot.get("speech_status") or "待机")
+        speech_at = snapshot.get("speech_next_at")
+        if enabled and isinstance(speech_at, (int, float)):
+            countdown = max(0, int(speech_at - time.time() + 0.999))
+            speech_state += (f" · 约 {countdown} 秒后再判断" if countdown
+                             else " · 等待合适时机")
+        if "speech" in labels:  # Older test fixtures may omit newer monitor rows.
+            labels["speech"].setText(speech_state)
         life = snapshot.get("life_state")
         if isinstance(life, dict) and life:
             def status_bar(key):
