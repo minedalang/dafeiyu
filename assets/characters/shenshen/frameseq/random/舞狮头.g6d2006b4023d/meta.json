@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "舞狮头.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "6d2006b4023d44087cf4c7dc055d1d8f2a8cec32e22610807a2dfea7bb0dc367"
+}

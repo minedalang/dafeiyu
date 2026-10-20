@@ -17,12 +17,32 @@
       "end_percent": 68.0
     },
     "工作状态-思考冒泡": {
-      "start_percent": 19.0,
-      "end_percent": 67.0
+      "start_percent": 3.0,
+      "end_percent": 93.0
     },
     "工作状态-清点归档": {
       "start_percent": 23.0,
       "end_percent": 63.0
+    },
+    "荡秋千": {
+      "start_percent": 32.0,
+      "end_percent": 73.0
+    },
+    "摇扇纳凉": {
+      "start_percent": 39.0,
+      "end_percent": 67.0
+    },
+    "悠闲哼歌": {
+      "start_percent": 19.0,
+      "end_percent": 80.0
+    },
+    "轻快摇摆舞": {
+      "start_percent": 30.0,
+      "end_percent": 80.0
+    },
+    "写代码": {
+      "start_percent": 24.0,
+      "end_percent": 72.0
     }
   }
 }

@@ -824,6 +824,35 @@ def _push_browser_media_setting(host, music_detect) -> None:
         pass
 
 
+def _music_is_ai_managed(host) -> bool:
+    """Autonomous decisions take priority over the legacy song-trigger action."""
+    cfg = getattr(host, "cfg", None) or getattr(host, "_config", None)
+    getter = getattr(cfg, "get", None)
+    if not callable(getter):
+        return False
+    try:
+        settings = getter("chat", {}) or {}
+    except (TypeError, ValueError, RuntimeError):
+        return False
+    return isinstance(settings, dict) and settings.get("autonomy_enabled") is True
+
+
+def _remember_music_observation(host, playing: bool) -> None:
+    """Debounce track gaps so the AI sees listening as one continuous context."""
+    if playing:
+        host._music_playing_observed = True
+        host._music_observation_silent_since = None
+        return
+    started = getattr(host, "_music_observation_silent_since", None)
+    if getattr(host, "_music_playing_observed", False) and started is None:
+        host._music_observation_silent_since = time.monotonic()
+    elif started is not None and time.monotonic() - started >= music_sing_grace_seconds(host):
+        host._music_playing_observed = False
+        host._music_observation_silent_since = None
+    else:
+        host._music_playing_observed = bool(getattr(host, "_music_playing_observed", False))
+
+
 def check_music_sing(host) -> None:
     """检测后台音乐并自动播放唱歌动画（可配置开关）。
 
@@ -846,16 +875,28 @@ def check_music_sing(host) -> None:
     if not host._music_sing_enabled:
         host._music_sing_active = False
         host._music_sing_silent_since = None
+        host._music_playing_observed = None
+        host._music_observation_silent_since = None
         return
     # 当前是纯音乐（配乐/OST/演奏曲）：没有可唱的句子，不唱歌。
     # 标志由歌词控制器维护；没启用歌词功能时该标志恒为 False，不受影响。
     if getattr(host, "_instrumental_playing", False):
         host._music_sing_active = False
         host._music_sing_silent_since = None
+        host._music_playing_observed = True
+        host._music_observation_silent_since = None
         return
     from . import music_detect
     _push_browser_media_setting(host, music_detect)
     playing = music_detect.is_music_playing()
+    _remember_music_observation(host, bool(playing))
+    if _music_is_ai_managed(host):
+        # Song/track changes are environment facts, not user commands. The AI
+        # may choose music in its ordinary plan, but this 1-second legacy
+        # polling loop must never interrupt an existing AI activity.
+        host._music_sing_active = False
+        host._music_sing_silent_since = None
+        return
     if host._music_sing_active:
         # 静音起点用 getattr 兜底读取：window.py 的行数预算已满，不新增字段。
         silent_since = getattr(host, "_music_sing_silent_since", None)

@@ -36,6 +36,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -667,19 +668,67 @@ def _fetch_from_qq(title: str, artist: str, *, deadline: float | None = None) ->
     return _as_lyrics(parse_lrc(str(payload.get("lyric") or "")))
 
 
+_LRCLIB_REMASTER_SUFFIX = re.compile(
+    r"(?:\s*[-–—]\s*|\s*[(（\[【]\s*)"
+    r"(?:\d{4}\s+)?re-?master(?:ed)?(?:\s+\d{4})?"
+    r"\s*[)）\]】]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _lrclib_title_matches(candidate: str, wanted: str) -> bool:
+    """容忍 Spotify 附加的 Remaster 年份，但不混淆 Live / Remix 版本。"""
+    def normalized(value: str) -> str:
+        value = unicodedata.normalize("NFKC", str(value or "")).casefold().strip()
+        return re.sub(r"[\W_]+", "", value)
+
+    if not normalized(candidate) or not normalized(wanted):
+        return False
+    if normalized(candidate) == normalized(wanted):
+        return True
+    return normalized(_LRCLIB_REMASTER_SUFFIX.sub("", candidate)) == normalized(
+        _LRCLIB_REMASTER_SUFFIX.sub("", wanted)
+    )
+
+
+def _lrclib_result(payload: dict) -> Lyrics | None:
+    """只使用有时间戳的歌词；纯文本无法对应桌宠的逐句气泡。"""
+    if payload.get("instrumental"):
+        return Lyrics(instrumental=True)
+    return _as_lyrics(parse_lrc(str(payload.get("syncedLyrics") or "")))
+
+
 def _fetch_from_lrclib(title: str, artist: str, *, deadline: float | None = None) -> Lyrics | None:
-    """lrclib：国际/日文曲目覆盖好，也是唯一会给「纯音乐」标记的源。"""
+    """lrclib：先精确查询，再搜索歌名+歌手匹配的同步歌词。"""
     params = urllib.parse.urlencode({"artist_name": artist, "track_name": title})
     payload = _http_get_json(f"https://lrclib.net/api/get?{params}", deadline=deadline)
-    if not isinstance(payload, dict):
+    if isinstance(payload, dict):
+        lyrics = _lrclib_result(payload)
+        if lyrics:
+            return lyrics
+
+    # Spotify 里的曲名常附有 "- 2011 Remaster"，也可能与 lrclib 收录的
+    # 专辑版本不同。精确 get 失败时再走官方 search，不需要 Spotify 登录。
+    # 用歌名和歌手双重验证结果，避免把翻唱 / 现场版误认为原曲。
+    matches = _http_get_json(
+        f"https://lrclib.net/api/search?{params}", deadline=deadline
+    )
+    if not isinstance(matches, list):
         return None
-    synced = payload.get("syncedLyrics")
-    if not synced:
-        # 曲目存在但没词：lrclib 会显式给出 instrumental=True（配乐/OST）。
-        if payload.get("instrumental"):
-            return Lyrics(instrumental=True)
-        return None
-    return Lyrics(lines=tuple(parse_lrc(str(synced))))
+    instrumental: Lyrics | None = None
+    for item in matches[:20]:
+        if not isinstance(item, dict):
+            continue
+        if not _lrclib_title_matches(item.get("trackName"), title):
+            continue
+        if artist and not _name_matches(str(item.get("artistName") or ""), artist):
+            continue
+        lyrics = _lrclib_result(item)
+        if lyrics and lyrics.lines:
+            return lyrics
+        if lyrics and lyrics.instrumental:
+            instrumental = lyrics
+    return instrumental
 
 
 def _fetch_from_netease(title: str, artist: str, *, deadline: float | None = None) -> Lyrics | None:

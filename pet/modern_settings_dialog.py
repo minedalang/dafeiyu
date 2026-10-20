@@ -688,8 +688,8 @@ class ModernSettingsDialog(QDialog):
             SettingsSection(
                 "音乐关联",
                 [
-                    SettingRow("music_sing", "音乐自动唱歌", "检测到后台播放音乐时，自动播放唱歌动画。", self.music_sing_check),
-                    SettingRow("music_lyric", "显示歌词", "在气泡里显示当前播放歌曲的歌词。仅 Windows 可用；需要播放器支持系统媒体控制（酷狗音乐需在其 设置 → 常规设置 → 播放 里开启「支持系统播放控件」）。歌词识别不依赖「音乐关联」里的路径——那里只影响右键「打开播放器」菜单。网易云音乐不上报播放进度，歌词按开始时间估算——快进或从中途开始播放后，用右键菜单「音乐 → 歌词对齐」校正。", self.music_lyric_check),
+                    SettingRow("music_sing", "音乐自动唱歌", "普通模式检测到后台音乐会自动唱歌；开启 AI 自主行为时仅将音乐状态交给 AI，切歌不会抢占正在执行的动画。", self.music_sing_check),
+                    SettingRow("music_lyric", "显示歌词", "在气泡里显示当前播放歌曲的歌词。仅 Windows 可用；需播放器支持系统媒体控制（Spotify 桌面版可用；Spotify 网页版还需打开「浏览器媒体会话参与歌词」）。歌词来自 QQ 音乐、LRCLIB、网易云等公开歌词源，不是 Spotify 内置歌词，部分歌曲可能找不到同步歌词。酷狗需开启「支持系统播放控件」。歌词识别与下方播放器路径无关；播放器不提供进度时按本地时钟估算，可从右键菜单「音乐 → 歌词对齐」校正。", self.music_lyric_check),
                     SettingRow("music_lyric_lead", "歌词提前量", "歌词相对音频的时间偏移。正值让歌词抢先显示，负值让它延后；唱得比音乐早一点通常更自然。", self.music_lyric_lead_spin),
                 ] + settings_music.browser_media_rows(self) + settings_music.foobar_lyrics_rows(self),
                 behavior_content,

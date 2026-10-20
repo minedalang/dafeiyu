@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "碎碎念-擦桌碎碎念.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "bfb616a3e6ed7375826d8fd00b41b9476d2e4bd65e10abddfb98f04c734e30e6"
+}

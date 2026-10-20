@@ -2119,6 +2119,17 @@ class AppShell:
 
     def _autonomy_observe(self):
         """GUI 线程采样；未授权识屏时只有非视觉桌宠/鼠标坐标。"""
+        def music_context(host):
+            music = getattr(host, "_music_playing_observed", None)
+            if not isinstance(music, bool):
+                return {}
+            return {"audio": {
+                "music_playing": music,
+                "instrumental": bool(getattr(host, "_instrumental_playing", False)),
+                "source": "system_audio_state",
+                "is_user_command": False,
+            }}
+
         mouse = QCursor.pos()
         overlay = getattr(self, "_overlay_shell", None)
         if overlay is not None:
@@ -2140,6 +2151,7 @@ class AppShell:
                 "desktop": {"width": host.bounds.width(),
                             "height": host.bounds.height()},
                 "time": time.strftime("%H:%M"),
+                **music_context(overlay),
             }, tuple(cats["acts"][:128]))
         win = self.win
         if win is None or not shiboken6.isValid(win) or not win.autonomy_ready():
@@ -2152,6 +2164,7 @@ class AppShell:
                         "height": win.screen().availableGeometry().height()}
                         if win.screen() else {},
             "time": time.strftime("%H:%M"),
+            **music_context(win),
         }, tuple(win.acts[:128]))
 
     def _autonomy_execute(self, intent) -> bool:

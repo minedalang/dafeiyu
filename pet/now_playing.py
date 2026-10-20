@@ -431,16 +431,30 @@ async def _read_async(
         return None
     session = snapshot.session
 
-    # 读字段要各自兜住：session 选取与读取之间可能失效，或某个播放器给的
-    # 时间轴字段异常（end_time 为 None 等）。让异常冒到最外层会被当成
-    # "播放器没了"，控制器于是清空歌词、下一拍重新取词（三次网络请求）。
+    # 歌名与时间轴独立读取：Spotify 等播放器偶尔返回不完整的 timeline。
+    # 没有时间轴仍应保留曲目信息，让歌词控制器按本地时钟估算进度；
+    # 不能因为 end_time/position 为 None 就把整首歌判成"播放器没了"。
     try:
         props = await session.try_get_media_properties_async()
-        timeline = session.get_timeline_properties()
-        end_time = float(timeline.end_time.total_seconds())
-        raw_position = float(timeline.position.total_seconds())
     except Exception:
         return None
+    try:
+        timeline = session.get_timeline_properties()
+    except Exception:
+        timeline = None
+    end_time = 0.0
+    raw_position = 0.0
+    position_available = False
+    if timeline is not None:
+        try:
+            end_time = float(timeline.end_time.total_seconds())
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            pass
+        try:
+            raw_position = float(timeline.position.total_seconds())
+            position_available = True
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            pass
 
     # 播放状态来自选择时那个快照（本会话本次采样只读一次 PlaybackInfo）。
     # 读不到状态时按 HEAD 的字段兜底口径处理：整次采样作废，而不是当成"暂停"。
@@ -456,7 +470,7 @@ async def _read_async(
     has_timeline = end_time > _MIN_VALID_DURATION
     is_playing = snapshot.playing
 
-    position = raw_position if has_timeline else None
+    position = raw_position if has_timeline and position_available else None
     if position is not None:
         position = _extrapolate(position, timeline, is_playing=is_playing, end=end_time)
 

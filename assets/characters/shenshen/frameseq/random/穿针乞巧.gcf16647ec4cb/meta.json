@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "穿针乞巧.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "cf16647ec4cb5634e4ff022bfc139a2233cd8be82f2391472bc842f7014ddc90"
+}
