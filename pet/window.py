@@ -3676,6 +3676,8 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
         menu = QMenu(self)
         self._active_context_menu = menu
         _populate_context_menu(menu, self)
+        from .context_menu_dismiss import watch_windows_menu_outside_click
+        watch_windows_menu_outside_click(menu)
         menu.aboutToHide.connect(
             lambda self=self: QTimer.singleShot(0, self, self._restore_on_top_after_context_menu)
         )

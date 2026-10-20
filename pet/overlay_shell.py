@@ -940,6 +940,8 @@ class ShellOverlayWindow(OverlayWindow):
             event.ignore()
             return
         menu = builder(target)
+        from .context_menu_dismiss import watch_windows_menu_outside_click
+        watch_windows_menu_outside_click(menu)
         menu.exec(event.globalPos())
         self._dispatch_deferred_menu_callbacks(menu)
         release_menu_tree(menu)
@@ -984,6 +986,8 @@ class ShellOverlayWindow(OverlayWindow):
         if target is None:
             return
         menu = builder(target)
+        from .context_menu_dismiss import watch_windows_menu_outside_click
+        watch_windows_menu_outside_click(menu)
         menu.exec(global_pos)
         self._dispatch_deferred_menu_callbacks(menu)
         release_menu_tree(menu)
