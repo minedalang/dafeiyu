@@ -3761,6 +3761,12 @@ class OverlayShell(QObject):
             if bubble is None:
                 bubble = cls(self._sprite_config(self.sprite), pet_window=anchor)
                 bubble.open_chat_callback = self.open_full_chat
+                # Overlay uses its own QuickChatBubble (PetInstance.win is None).
+                # Route its messages through the same AI behavior planner.
+                planner = getattr(getattr(self._instance, "shell", None),
+                                  "_on_user_chat_message", None)
+                if callable(planner):
+                    bubble.user_message_sent.connect(planner)
                 self._quick_chat = bubble
             else:
                 bubble.settings = self._config.chat_settings()

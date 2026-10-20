@@ -878,6 +878,7 @@ class PetInstance:
         if self.quick_chat is None:
             self.quick_chat = QuickChatBubble(self.config, pet_window=self.win)
             self.quick_chat.open_chat_callback = self.open_chat
+            self.quick_chat.user_message_sent.connect(self.shell._on_user_chat_message)
         else:
             self.quick_chat.pet_window = self.win
             self.quick_chat.settings = self.config.chat_settings()
@@ -901,6 +902,8 @@ class PetInstance:
                 notifier=self.shell.system_notify,
                 auth_callback=self.open_chat_settings,
             )
+            self.legacy_chat_window.user_message_sent.connect(self.shell._on_user_chat_message)
+            self.legacy_chat_window.assistant_answered.connect(self.shell._show_ai_chat_reply)
         else:
             self.legacy_chat_window.set_pet_window(host)
         self.chat_window = self.legacy_chat_window
@@ -921,6 +924,8 @@ class PetInstance:
                 notifier=self.shell.system_notify,
                 auth_callback=self.open_chat_settings,
             )
+            self.modern_chat_window.user_message_sent.connect(self.shell._on_user_chat_message)
+            self.modern_chat_window.assistant_answered.connect(self.shell._show_ai_chat_reply)
         else:
             self.modern_chat_window.set_pet_window(host)
         self.chat_window = self.modern_chat_window
@@ -1171,6 +1176,7 @@ class PetInstance:
         """
         if not self.enable_chat or not str(reply or "").strip():
             return
+        self._show_proactive_reply_action(reply)
         if self.chat_window is not None and hasattr(self.chat_window, "append_look_sync"):
             self.chat_window.append_look_sync(user_text, reply)
             return
@@ -1202,6 +1208,42 @@ class PetInstance:
                 store.save(session)
         except Exception:
             logging.exception("同步识屏问答到会话记录失败")
+
+    def _show_proactive_reply_action(self, reply: str) -> None:
+        """Turn spontaneous screen-reading speech into a replyable bubble."""
+        host = self.win or getattr(self.shell, "_overlay_shell", None)
+        if host is None:
+            return
+        from .window_alerts import bubble_blocked, quiet_blocked
+
+        # Respect user quiet hours / fullscreen and existing approval bubbles.
+        if quiet_blocked(host) or bubble_blocked(host):
+            return
+        if (getattr(host, "_alert_current", None) is not None
+                or getattr(host, "_sticky_bubble_active", False)):
+            return
+        summary = " ".join(str(reply).split())[:140]
+        if len(reply) > 140:
+            summary += "…"
+
+        def dismiss() -> None:
+            if getattr(host, "_sticky_text", None) == summary:
+                host.hide_bubble()
+
+        def answer() -> None:
+            dismiss()
+            self.open_chat()
+
+        try:
+            shown = host.show_bubble(summary, sticky=True, buttons=[
+                ("💬 回复小鲸鱼", answer), ("稍后再说", dismiss),
+            ])
+            if shown:
+                # Interactive bubbles are sticky; expire this invitation so
+                # an unattended reply button cannot block future pet speech.
+                QTimer.singleShot(45000, dismiss)
+        except RuntimeError:
+            pass  # Pet was destroyed while the queued screen reply arrived.
 
     def _set_autostart(self, enabled: bool, win=None) -> bool:
         ok = autostart_mod.set_enabled(bool(enabled))
@@ -1964,6 +2006,23 @@ class AppShell:
         _mac_set_dock_icon_visible(bool(self.config.get("show_dock_icon", True)))
 
     # ------------------------------------------------------------ AI 自主桌宠
+    def _on_user_chat_message(self, text: str) -> None:
+        """Feed direct user requests into the same allowlisted pet planner."""
+        service = getattr(self, "_autonomy", None)
+        if service is not None and service.enabled:
+            service.queue_user_message(text)
+
+    def _show_ai_chat_reply(self, text: str) -> None:
+        """A finished chat answer is also spoken visibly by the pet."""
+        line = " ".join(str(text or "").split())[:95]
+        if not line:
+            return
+        overlay = getattr(self, "_overlay_shell", None)
+        if overlay is not None:
+            overlay.show_bubble(line, duration_ms=5500, reserve=False)
+        elif self.win is not None:
+            self.win.show_bubble(line, duration_ms=5500)
+
     def _sync_autonomy_service(self) -> None:
         """进程单例：默认无服务；两种渲染拓扑共用一份 AI 请求预算。"""
         chat = self.config.get("chat", {}) or {}

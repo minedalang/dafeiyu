@@ -259,6 +259,9 @@ class ChatComposer(QFrame):
 
 
 class ChatWindow(QDialog):
+    user_message_sent = Signal(str)
+    assistant_answered = Signal(str)
+
     def __init__(self, config, character_id: str, parent=None, pet_window=None, notifier=None, auth_callback=None):
         super().__init__(parent)
         self.config = config
@@ -925,6 +928,7 @@ class ChatWindow(QDialog):
         self._add("user", text)
         self._last_user_text = text
         self._begin_generation(text)
+        self.user_message_sent.emit(text)
 
     def retry_last(self) -> None:
         if self.service.busy:
@@ -1037,6 +1041,7 @@ class ChatWindow(QDialog):
         self._refresh_sessions()
         self._reset()
         self.pet_link.success()
+        self.assistant_answered.emit(text)
         self._show_system_notice("对话完成", "AI 已回复完成，点击查看。")
         if follow_output:
             self._bottom()

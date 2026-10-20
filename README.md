@@ -1,4 +1,20 @@
-# dsh-pet-indesktop
+# 大肥鱼（dafeiyu）· AI 自主小鲸鱼桌宠
+
+> **项目来源与二次开发声明（请先阅读）**：本仓库 [minedalang/dafeiyu](https://github.com/minedalang/dafeiyu) **基于 [MerZlin/dsh-pet-indesktop](https://github.com/MerZlin/dsh-pet-indesktop) 二次开发**；上游项目又改编自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)。本仓库不是任何上游的官方发行版。桌宠程序框架、现有小鲸鱼形象与 WebM 动画来自原有项目及其素材来源，感谢所有原作者与贡献者；版权、开源协议及素材使用限制仍归各自权利方，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+本分支重点增加 **LLM 自主日常活动决策、现有动画多步组合、按用户电脑本地时间选择吃饭/午睡/学习娱乐、聊天触发桌宠动作、主动识屏后可点击回复，以及 AI 决策状态面板**。**没有重新制作动画**，保留原来的小鲸鱼外观。
+
+### 大肥鱼 AI 功能如何体验
+
+1. Windows 下从本仓库源码目录运行 `2-Run-Windows.bat`（首次使用按 `WINDOWS-AI-TEST.md` 的说明安装 Conda 环境）。
+2. 打开「AI 设置」，配置可用的 GPT 等兼容 Chat Completions 的 API 与模型；打开「**AI 自主行为**」开关。自主识屏属于单独的授权开关，不开启仍可根据鼠标、桌宠状态和本地时间选动作；如需识别前台软件内容，需另行开启相关视觉授权。
+3. 等待几秒到一个决策周期，查看「**AI 决策状态面板**」中的请求、活动步骤及执行结果；活动可能连续播放已有的用餐、休息、写代码、下五子棋、演奏等动画（只有当前素材包实际存在的动画才会被选择）。
+4. 打开「**AI 对话**」向小鲸鱼说“陪我下棋”“中午了，去吃饭吧”等话：聊天模型正常答复，同时自主决策器在已开启时**另调用一次模型**选择匹配的桌宠动画；回复也会在鱼头顶气泡显示。快速对话同样可以触发动作。
+5. 小鲸鱼**主动识屏说话**时，气泡提供「**回复小鲸鱼**」按钮，点它打开同一角色的 AI 对话窗口继续聊；不想回复点「稍后再说」。免打扰/全屏时仍遵守既有气泡限制。
+
+> **费用与限制**：普通聊天和自主动作决策是两次不同 API 请求，都会产生相应的模型费用；自主行为只负责已有动画、移动和文字气泡，不会代替用户读文件、操作软件或真正执行办公任务。AI 生成计划可能受网络、素材和用户手动操作影响而被跳过。需在 Windows 本机实际验收；下方版本号、Release 徽章与下载链接均为**上游 MerZlin 项目的信息**，并非本分支的构建产物。
+
+### 上游项目发布信息（非本分支版本）
 
 <p align="center">
   <a href="https://github.com/MerZlin/dsh-pet-indesktop/releases"><img alt="版本" src="https://img.shields.io/github/v/release/MerZlin/dsh-pet-indesktop?label=%E7%89%88%E6%9C%AC&color=blue"></a>
@@ -13,7 +29,7 @@
 
 一个基于 **Python + PySide6** 的独立桌面宠物。项目脱离 DSH 运行时，提供透明无边框、置顶、可拖动、角色切换、动画播放、系统托盘和可选 AI 对话能力。
 
-> **本工作区 AI 自主行为改造版（非原仓库正式 Release）**：新增 AI 选择日常动作、向鼠标靠近/远离、原版动画播放、独立的自主识屏授权与 API 频率设置。默认全部关闭，使用源码运行。Windows + Conda 一键安装和本机打包入口见 [Windows AI 测试版指南](WINDOWS-AI-TEST.md)，行为细节见 [AI 自主桌宠说明](docs/AI-AUTONOMY.md)。
+> **本分支说明**：AI 自主决策默认关闭，不开启时仍保留上游的随机动画逻辑。Windows + Conda 测试启动见 [Windows AI 测试版指南](WINDOWS-AI-TEST.md)，行为技术细节见 [AI 自主桌宠说明](docs/AI-AUTONOMY.md)。本节往后的上游发行记录不代表大肥鱼 fork 已提供对应安装包。
 
 > **发布状态**
 >
@@ -662,7 +678,7 @@ assets/characters/<character_id>/manifest.json
 
 ## 项目来源与素材声明
 
-本项目改自、源于 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)。桌宠的基础交互思路、动画链行为模型和部分资源组织方式来自原项目，感谢原作者的开源贡献。
+**本分支的直接上游是 [MerZlin/dsh-pet-indesktop](https://github.com/MerZlin/dsh-pet-indesktop)，更早的原始来源为 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)。** 桌宠的基础交互思路、动画链行为模型、程序框架和大量动画素材来自上游。本分支增加了 AI 行为规划与聊天联动，没有自行创作新动画，也不代表上游作者授权背书或官方发布。感谢原作者和历代贡献者。
 
 DeepSeek 余额显示（气泡/小部件思路）参考了 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，本项目的实现为桌宠内置的轻量版（菜单「DeepSeek 余额」+ 可选自动刷新，通过 DeepSeek 官方 `/user/balance` 接口查询，详见 [DeepSeek API 查询余额文档](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)）。
 

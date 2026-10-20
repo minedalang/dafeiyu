@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QTimer, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -53,6 +53,8 @@ def _surface_radius(preset: dict) -> float:
 
 
 class QuickChatBubble(QFrame):
+    user_message_sent = Signal(str)
+
     def __init__(self, config, pet_window=None, parent=None):
         super().__init__(parent)
         self.config = config
@@ -404,6 +406,7 @@ class QuickChatBubble(QFrame):
         )
         self._request_pet_window = self.pet_window
         self._active_request_id = self.service.send(messages, config)
+        self.user_message_sent.emit(text)
 
     def _started(self, request_id: str) -> None:
         if request_id != self._active_request_id:

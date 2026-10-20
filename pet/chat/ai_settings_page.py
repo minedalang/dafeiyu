@@ -131,6 +131,9 @@ class _AiSettingsPage(QWidget):
         # execution results and timings; it does not store prompts or screenshots.
         from ..autonomy_monitor import get_autonomy_monitor
         self._autonomy_monitor = get_autonomy_monitor()
+        # Most settings pages run under `python -m pet --settings`, a separate
+        # process from the running pet. Read the pet's atomic local snapshot.
+        self._autonomy_monitor.share_with(getattr(config, "dir", None))
         self._autonomy_monitor_labels = {}
         for name in ("status", "model", "action", "result", "last", "next", "counts", "error", "history"):
             label = QLabel("—", self)

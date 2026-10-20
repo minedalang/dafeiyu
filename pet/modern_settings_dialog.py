@@ -1992,6 +1992,20 @@ class ModernSettingsDialog(QDialog):
                             "autonomy_interval_seconds",
                         ),
                     ),
+                    (
+                        "AI 决策状态面板",
+                        claim(
+                            "autonomy_monitor_status",
+                            "autonomy_monitor_model",
+                            "autonomy_monitor_action",
+                            "autonomy_monitor_result",
+                            "autonomy_monitor_last",
+                            "autonomy_monitor_next",
+                            "autonomy_monitor_counts",
+                            "autonomy_monitor_error",
+                            "autonomy_monitor_history",
+                        ),
+                    ),
                     ("系统通知", claim("system_notifications_enabled")),
                     (
                         "视觉能力",

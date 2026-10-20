@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "吃晚餐.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "8902602fb012c29d33392822ab534ed119a136610f6bc2e8c0c51d60afec673a"
+}

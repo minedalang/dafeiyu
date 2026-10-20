@@ -1056,6 +1056,9 @@ class SidebarScrim(QFrame):
 
 
 class ChatWindow(QDialog):
+    user_message_sent = Signal(str)
+    assistant_answered = Signal(str)
+
     def __init__(self, config, character_id: str, parent=None, pet_window=None, notifier=None, auth_callback=None):
         super().__init__(parent)
         self.config = config
@@ -2109,6 +2112,10 @@ class ChatWindow(QDialog):
         self._add("user", display_text)
         self._last_user_text = request_text
         self._begin_generation(request_text, image_payloads=image_payloads)
+        # Give the pet's independent action planner the same user intent.
+        # Attachments and private attachment contents are never forwarded.
+        if text:
+            self.user_message_sent.emit(text)
 
     def retry_last(self) -> None:
         if self.service.busy:
@@ -2296,6 +2303,7 @@ class ChatWindow(QDialog):
         self._refresh_sessions()
         self._reset()
         self.pet_link.success()
+        self.assistant_answered.emit(text)
         self._show_system_notice("对话完成", "AI 已回复完成，点击查看。")
         if self._stream_follow_output:
             self._bottom()

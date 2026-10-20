@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "原地蹲下玩玩具汽车.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "3ec9978ce3663d9bc4bfe5f5223f0a4e3d9ea6fcd0a6acdbaa802e0cfba36bf2"
+}
