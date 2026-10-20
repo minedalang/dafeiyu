@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import threading
+import time
+from datetime import datetime
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
@@ -125,6 +127,23 @@ class _AiSettingsPage(QWidget):
         self.autonomy_interval.setSuffix(" 秒")
         self.autonomy_interval.setValue(self.settings.autonomy_interval_seconds)
         self._autonomy_edited: set[str] = set()
+        # Live autonomy diagnostics. The monitor only retains action names,
+        # execution results and timings; it does not store prompts or screenshots.
+        from ..autonomy_monitor import get_autonomy_monitor
+        self._autonomy_monitor = get_autonomy_monitor()
+        self._autonomy_monitor_labels = {}
+        for name in ("status", "model", "action", "result", "last", "next", "counts", "error", "history"):
+            label = QLabel("—", self)
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self._autonomy_monitor_labels[name] = label
+        self._autonomy_monitor.changed.connect(self._refresh_autonomy_monitor)
+        self._autonomy_monitor_timer = QTimer(self)
+        self._autonomy_monitor_timer.setInterval(1000)
+        self._autonomy_monitor_timer.timeout.connect(self._refresh_autonomy_monitor)
+        self._autonomy_monitor_timer.start()
+        self._refresh_autonomy_monitor()
         # 系统通知键：构造期快照无条件回写会把打开期间外部（老聊天设置即存入口
         # settings_dialog.py:437）对该键的改动静默回滚，所以只在用户实际拨动过
         # （脏标记）时才写；toggled 连接晚于这里的 setChecked，构造期不会误标。
@@ -265,6 +284,44 @@ class _AiSettingsPage(QWidget):
                 "模型响应慢时不会阻塞动画。",
                 self.autonomy_interval, parent=self),
         ], self))
+        root.addWidget(SettingsSection("AI 决策状态面板", [
+            SettingRow(
+                "autonomy_monitor_status", "运行状态",
+                "这里显示后台自主决策服务的真实状态；聊天连接成功不等于自主决策已启动。",
+                self._autonomy_monitor_labels["status"], parent=self),
+            SettingRow(
+                "autonomy_monitor_model", "决策模型",
+                "显示后台实际配置的模型，以及是否允许向模型发送桌面截图。",
+                self._autonomy_monitor_labels["model"], parent=self),
+            SettingRow(
+                "autonomy_monitor_action", "上次 AI 选择",
+                "显示解析后的动作意图（可能是英文动作名），并非随机动画。",
+                self._autonomy_monitor_labels["action"], parent=self),
+            SettingRow(
+                "autonomy_monitor_result", "执行器反馈",
+                "“执行器已接受”表示程序接收了动作，不保证肉眼一定能看到变化。",
+                self._autonomy_monitor_labels["result"], parent=self),
+            SettingRow(
+                "autonomy_monitor_last", "最近完成时间",
+                "模型完成返回或遇到错误的时间。",
+                self._autonomy_monitor_labels["last"], parent=self),
+            SettingRow(
+                "autonomy_monitor_next", "下次决策",
+                "根据定时器间隔估算；繁忙时会跳过，不会积压请求。",
+                self._autonomy_monitor_labels["next"], parent=self),
+            SettingRow(
+                "autonomy_monitor_counts", "请求统计",
+                "仅统计本次运行的 AI 自主动作请求，不含 AI 聊天和独立的“主动识屏”搭话功能。",
+                self._autonomy_monitor_labels["counts"], parent=self),
+            SettingRow(
+                "autonomy_monitor_error", "最近错误",
+                "为保护 API Key 和屏幕隐私，只显示错误类型，不显示原始请求内容。",
+                self._autonomy_monitor_labels["error"], parent=self),
+            SettingRow(
+                "autonomy_monitor_history", "最近五次记录",
+                "包含 AI 动作意图和执行器反馈；不保存聊天内容和截图。",
+                self._autonomy_monitor_labels["history"], stacked=True, parent=self),
+        ], self))
         self.autonomy_enabled.toggled.connect(
             lambda _: self._autonomy_edited.add("autonomy_enabled"))
         self.autonomy_screen.toggled.connect(
@@ -311,6 +368,51 @@ class _AiSettingsPage(QWidget):
         self.delete_provider_btn.clicked.connect(self._delete_provider)
         self._update_provider_buttons()
         root.addStretch(1)
+
+    def _refresh_autonomy_monitor(self, snapshot=None) -> None:
+        """Render the live service snapshot and refresh the countdown locally."""
+        if not isinstance(snapshot, dict):
+            snapshot = self._autonomy_monitor.snapshot()
+        labels = self._autonomy_monitor_labels
+        enabled = bool(snapshot.get("enabled"))
+        busy = bool(snapshot.get("busy"))
+        if not enabled:
+            icon = "○"
+        elif busy:
+            icon = "◉"
+        else:
+            icon = "●"
+        labels["status"].setText(f'{icon} {snapshot.get("state") or "未知"}')
+        model = str(snapshot.get("model") or "—")
+        vision = "识屏开启" if snapshot.get("vision") else "识屏关闭"
+        labels["model"].setText(f"{model} · {vision}")
+        labels["action"].setText(str(snapshot.get("last_action") or "—"))
+        labels["result"].setText(str(snapshot.get("last_result") or "—"))
+
+        def timestamp(value):
+            if not isinstance(value, (int, float)) or value <= 0:
+                return "—"
+            return datetime.fromtimestamp(value).strftime("%H:%M:%S")
+
+        labels["last"].setText(timestamp(snapshot.get("last_decision_at")))
+        next_at = snapshot.get("next_decision_at")
+        if not enabled:
+            next_text = "—（未开启）"
+        elif isinstance(next_at, (int, float)):
+            remaining = max(0, int(next_at - time.time() + 0.999))
+            next_text = f"约 {remaining} 秒后" if remaining else "即将进入下一周期"
+            if busy:
+                next_text += " · 当前请求进行中"
+        else:
+            next_text = "等待调度"
+        labels["next"].setText(next_text)
+        labels["counts"].setText(
+            f'已发起 {snapshot.get("requests", 0)} 次 · 已完成 {snapshot.get("completed", 0)} 次')
+        labels["error"].setText(str(snapshot.get("last_error") or "无"))
+        history = snapshot.get("history") or ()
+        labels["history"].setText("\n".join(
+            f'{timestamp(item.get("at"))}  {item.get("action") or "—"}  ·  {item.get("result") or "—"}'
+            for item in history if isinstance(item, dict)) or "暂无记录")
 
     def appearance_rows(self) -> list[SettingRow]:
         """Controls visually owned by the Appearance page, persisted with AI settings.
