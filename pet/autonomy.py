@@ -26,6 +26,7 @@ from .autonomy_monitor import get_autonomy_monitor
 from .activity_lifecycle import (
     SLEEP_ANIMATION, WAKE_ANIMATIONS, duration_seconds, is_night, sleep_pressure,
 )
+from .life_state import WhaleLife
 
 log = logging.getLogger(__name__)
 _REPLAN_INTERVAL_MS = 90_000
@@ -118,6 +119,9 @@ class AutonomyService(QObject):
         self._activity_timer = QTimer(self)
         self._activity_timer.setInterval(500)
         self._activity_timer.timeout.connect(self._activity_watch)
+        self._life_timer = QTimer(self)
+        self._life_timer.setInterval(30_000)
+        self._life_timer.timeout.connect(self._update_life)
         self._plan_active = False
         self._plan_steps = deque()
         self._plan_name = ""
@@ -133,6 +137,7 @@ class AutonomyService(QObject):
         self._plan_repeating = False
         self._sleep_held = False
         self._step_held_animation = ""
+        self._life_activity_started = False
         self._last_awakened_at = 0.0
         self._busy = False
         self._generation = 0
@@ -155,6 +160,7 @@ class AutonomyService(QObject):
         self._interval_seconds = 40
         self._monitor = get_autonomy_monitor()
         self._monitor.share_with(getattr(config, "dir", None), writer=True)
+        self._life = WhaleLife(getattr(config, "dir", None))
         self.decision_ready.connect(self._accept_decision)
         self.apply_config()
 
@@ -184,14 +190,17 @@ class AutonomyService(QObject):
             self._pending_visual = None
         if not enabled:
             self._timer.stop()
+            self._life_timer.stop()
             self._cancel_plan()
         else:
             self._timer.start(interval)
+            self._life_timer.start()
             if not was_enabled:
                 # Explicitly enabling is consent for the first non-visual call.
                 QTimer.singleShot(2500, self._tick)
         self._monitor.publish(
             enabled=enabled, vision=screen, interval_seconds=self._interval_seconds,
+            life_state=self._life.snapshot(),
             busy=self._busy if enabled else False,
             state=("已关闭" if not enabled else
                    "AI 请求中" if self._busy else
@@ -207,6 +216,7 @@ class AutonomyService(QObject):
         self._generation += 1
         self._cancelled.set()
         self._timer.stop()
+        self._life_timer.stop()
         self._cancel_plan()
         self._pending_user_text = ""
         self._pending_visual = None
@@ -215,6 +225,12 @@ class AutonomyService(QObject):
 
     def _cancel_plan(self, *, awakened: bool = False) -> None:
         """Cancel queued AI steps without interrupting user-controlled animation."""
+        # Settle the elapsed time into the *previous* activity before clearing
+        # it. In particular, cancellation cannot erase 20 minutes of sleep.
+        self._life.advance(activity=self._plan_activity if self._plan_active else None)
+        if awakened and self._sleep_held:
+            self._life.awakened()
+        self._life.save(force=True)
         self._plan_revision += 1
         self._replan_timer.stop()
         if self._step_held_animation:
@@ -245,10 +261,18 @@ class AutonomyService(QObject):
         self._plan_repeating = False
         self._sleep_held = False
         self._step_held_animation = ""
+        self._life_activity_started = False
         self._monitor.publish(
             active_animation="", sustained=False,
+            life_state=self._life.snapshot(),
             activity_name="", activity_started_at=None,
             activity_ends_at=None, activity_total_seconds=0)
+
+    def _update_life(self) -> None:
+        """Advance the local life clock without using a single model token."""
+        self._life.advance(activity=self._plan_activity if self._plan_active else None)
+        self._life.save()
+        self._monitor.publish(life_state=self._life.snapshot())
 
     def _schedule_replan(self, delay_ms: int = _REPLAN_INTERVAL_MS) -> None:
         """Keep a long-lived activity fresh without resetting its deadline."""
@@ -285,6 +309,8 @@ class AutonomyService(QObject):
         message = str(text or "").strip()[:300]
         if not message:
             return
+        self._life.user_chatted()
+        self._monitor.publish(life_state=self._life.snapshot())
         self._pending_user_text = message
         self._cancel_plan(awakened=True)
         self._monitor.publish(state="收到聊天消息，准备选择对应动作",
@@ -350,6 +376,10 @@ class AutonomyService(QObject):
                 round(awakened_age) if awakened_age is not None and awakened_age < 600
                 else None),
         }}
+        self._life.advance(activity=self._plan_activity if self._plan_active else None)
+        self._life.save()
+        world["life_state"] = self._life.snapshot()
+        self._monitor.publish(life_state=world["life_state"])
         if replan:
             world["ongoing_activity"] = {
                 "activity": self._plan_activity,
@@ -565,6 +595,7 @@ class AutonomyService(QObject):
         self._plan_total = len(steps)
         self._plan_name = ACTIVITY_CLIPS.get(intent.activity, ("自由活动", ()))[0]
         self._plan_activity = intent.activity
+        self._life_activity_started = False
         self._plan_available = frozenset(self._request_animations)
         self._plan_deadline = time.monotonic() + duration if duration else 0.0
         self._plan_from_chat = self._current_request_user
@@ -728,6 +759,15 @@ class AutonomyService(QObject):
             executed = False
         if executed and intent.verb == "play" and not self._plan_repeating:
             self._recent_clips.append(intent.animation)
+            if not self._life_activity_started and (self._plan_activity != "nap" or sleep_step):
+                self._life_activity_started = True
+                self._life.start_activity(self._plan_activity)
+                self._monitor.publish(life_state=self._life.snapshot())
+        elif executed and intent.verb == "say" and self._plan_activity == "social" \
+                and not self._life_activity_started:
+            self._life_activity_started = True
+            self._life.start_activity("social")
+            self._monitor.publish(life_state=self._life.snapshot())
         if executed and not self._plan_repeating:
             self._history.append(action)
         self._monitor.publish(

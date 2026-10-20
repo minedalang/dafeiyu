@@ -42,6 +42,7 @@ class AutonomyMonitor(QObject):
             "activity_started_at": None,
             "activity_ends_at": None,
             "activity_total_seconds": 0,
+            "life_state": {},
             "last_result": "尚无决策",
             "last_error": "",
             "last_request_at": None,

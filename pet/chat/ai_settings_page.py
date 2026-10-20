@@ -139,8 +139,8 @@ class _AiSettingsPage(QWidget):
         self._edit_active_loop_button = QPushButton("调节当前持续动画的循环帧…", self)
         self._edit_active_loop_button.setEnabled(False)
         self._edit_active_loop_button.clicked.connect(self._open_activity_loop_editor)
-        for name in ("status", "activity_time", "model", "action", "result",
-                     "last", "next", "counts", "error", "history"):
+        for name in ("status", "activity_time", "life", "life_events", "model",
+                     "action", "result", "last", "next", "counts", "error", "history"):
             label = QLabel("—", self)
             label.setWordWrap(True)
             label.setTextFormat(Qt.TextFormat.PlainText)
@@ -306,6 +306,15 @@ class _AiSettingsPage(QWidget):
                 "活动中的 AI 阶段更新不会重置倒计时。结束后自动清空。",
                 self._autonomy_monitor_labels["activity_time"], parent=self),
             SettingRow(
+                "autonomy_monitor_life", "小鲸鱼生命状态",
+                "这些状态每 30 秒在本地更新，重启后也会保留；饥饿和困意越高越需要照顾，"
+                "精力和心情则越高越好。模型读取此状态做决策，但不会每 30 秒调用 API。",
+                self._autonomy_monitor_labels["life"], stacked=True, parent=self),
+            SettingRow(
+                "autonomy_monitor_life_events", "最近生活经历",
+                "只记录活动名和聊天/叫醒事件，不保存聊天原文、屏幕截图或 API 内容。",
+                self._autonomy_monitor_labels["life_events"], stacked=True, parent=self),
+            SettingRow(
                 "autonomy_monitor_model", "决策模型",
                 "显示后台实际配置的模型，以及是否允许向模型发送桌面截图。",
                 self._autonomy_monitor_labels["model"], parent=self),
@@ -430,6 +439,33 @@ class _AiSettingsPage(QWidget):
         else:
             time_text = "—（暂无持续活动）" if enabled else "—（未开启）"
         labels["activity_time"].setText(time_text)
+        life = snapshot.get("life_state")
+        if isinstance(life, dict) and life:
+            def status_bar(key):
+                try:
+                    number = max(0.0, min(100.0, float(life.get(key, 0))))
+                    count = max(0, min(10, round(number / 10)))
+                    return f'{"█" * count}{"·" * (10-count)}  {number:.0f}/100'
+                except (ValueError, TypeError, OverflowError):
+                    return "—"
+
+            labels["life"].setText(
+                f'精力    {status_bar("energy")}\n'
+                f'饥饿    {status_bar("hunger")}\n'
+                f'困意    {status_bar("sleepiness")}\n'
+                f'心情    {status_bar("mood")}\n'
+                f'生活倾向：{str(life.get("goal") or "自然活动")[:100]}')
+            events = life.get("recent_events")
+            labels["life_events"].setText("\n".join(
+                f'{datetime.fromtimestamp(item["at"]):%m-%d %H:%M}  {item["description"]}'
+                for item in (events[-5:] if isinstance(events, list) else ())
+                if isinstance(item, dict)
+                and isinstance(item.get("at"), (int, float))
+                and isinstance(item.get("description"), str)
+            ) or "暂无生活记录")
+        else:
+            labels["life"].setText("—（等待桌宠生命系统启动）")
+            labels["life_events"].setText("暂无生活记录")
         model = str(snapshot.get("model") or "—")
         vision = "识屏开启" if snapshot.get("vision") else "识屏关闭"
         labels["model"].setText(f"{model} · {vision}")

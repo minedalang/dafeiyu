@@ -42,7 +42,11 @@
     },
     "写代码": {
       "start_percent": 24.0,
-      "end_percent": 72.0
+      "end_percent": 67.0
+    },
+    "工作状态-忙碌点按": {
+      "start_percent": 46.0,
+      "end_percent": 66.0
     }
   }
 }

@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "讨糖南瓜灯.webm",
+ "frames": 241,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "9535d1a29f780aa2d78ffaabd7ee1765952bf34b2b380e9edc25dc6a3003070b"
+}
