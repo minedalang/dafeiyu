@@ -607,6 +607,7 @@ class PetInstance:
         win.on_settings_reset = self._slot_wrap(
             lambda: self.shell.apply_settings_reset(self))
         win.on_open_todo_panel = self._slot_wrap(self.shell.open_todo_panel)
+        win.on_open_pomodoro = self._slot_wrap(self.shell.open_pomodoro)
         # 网络信息（issue #172）：右键菜单入口 → 进程级弹窗（overlay 侧由
         # SpriteMenuFacade.on_network_info 走同一方法）。
         win.on_network_info = self._slot_wrap(self.shell.open_network_info)
@@ -1374,6 +1375,8 @@ class AppShell:
         # 角色热切换重建窗口后无需重绑（PR72 上游版挂 PetApp；本分支归 AppShell）。
         self.todo_service = None
         self.todo_panel = None
+        self._pomodoro_service = None
+        self._pomodoro_dialog = None
         # 网络信息弹窗（issue #172）：进程级单例、非模态。数据只在打开时取一次
         # （后台线程），故不需要常驻服务；窗口销毁即置空。
         self.network_info_dialog = None
@@ -2105,6 +2108,10 @@ class AppShell:
             return False
         if trigger != "click" and quiet_blocked(host):
             return False
+        focus = getattr(self, '_pomodoro_service', None)
+        if (trigger != 'click' and focus is not None
+                and focus.clock.snapshot()['quiet_focus']):
+            return False  # User requested a silent focus period; clicks still work.
         if (getattr(host, "_alert_current", None) is not None
                 or getattr(host, "_sticky_bubble_active", False)):
             return False
@@ -2172,7 +2179,8 @@ class AppShell:
                                         else None),
                 begin_sleep_loop=self._autonomy_begin_sleep_loop,
                 sleep_loop_active=self._autonomy_sleep_loop_active,
-                end_sleep_loop=self._autonomy_end_sleep_loop)
+                end_sleep_loop=self._autonomy_end_sleep_loop,
+                sleep_dragging=self._autonomy_sleep_dragging)
         else:
             service.apply_config()
         if watcher is not None:
@@ -2214,6 +2222,7 @@ class AppShell:
                             "height": host.bounds.height()},
                 "time": time.strftime("%H:%M"),
                 **music_context(overlay),
+                **self._pomodoro_context(),
             }, tuple(cats["acts"][:128]))
         win = self.win
         if win is None or not shiboken6.isValid(win) or not win.autonomy_ready():
@@ -2227,6 +2236,7 @@ class AppShell:
                         if win.screen() else {},
             "time": time.strftime("%H:%M"),
             **music_context(win),
+            **self._pomodoro_context(),
         }, tuple(win.acts[:128]))
 
     def _autonomy_execute(self, intent) -> bool:
@@ -2316,6 +2326,17 @@ class AppShell:
         win = self.win
         return bool(win is not None and shiboken6.isValid(win)
                     and win.start_autonomy_sleep_loop(animation))
+
+    def _autonomy_sleep_dragging(self) -> bool:
+        """Position-only drag must not be interpreted as a wake event."""
+        overlay = getattr(self, "_overlay_shell", None)
+        if overlay is not None:
+            sprite = getattr(overlay, "sprite", None)
+            return bool(sprite is not None and
+                        getattr(sprite, "interaction_state", "") == "drag")
+        win = self.win
+        return bool(win is not None and shiboken6.isValid(win)
+                    and getattr(win, "_dragging", False))
 
     def _autonomy_sleep_loop_active(self, animation: str) -> bool:
         overlay = getattr(self, "_overlay_shell", None)
@@ -3378,6 +3399,8 @@ class AppShell:
         #（关掉后迟到的 queued 回调提交会被明确拒绝）。
         if self.todo_service is not None:
             self.todo_service.stop()
+        if self._pomodoro_service is not None:
+            self._pomodoro_service.timer.stop()
         # 语音报时同为进程级懒服务，退出必须一并停：其无主 QTimer 的 timeout
         # 连接从 Qt C++ 侧强引用住整个对象图（理由同 todo_service，见
         # _shutdown_live_for_tests 注释）；不停则退出期仍在跑 20s tick，且
@@ -4854,6 +4877,39 @@ class AppShell:
         self.dock_menu = menu
         return menu
 
+    def open_pomodoro(self) -> None:
+        """One process-level user timer for all pets and both renderers."""
+        from .pomodoro_dialog import PomodoroDialog, PomodoroService
+        if self._pomodoro_service is None:
+            self._pomodoro_service = PomodoroService(
+                getattr(self.config, 'dir', None))
+            self._pomodoro_service.transitioned.connect(self._pomodoro_notify)
+        if self._pomodoro_dialog is None:
+            self._pomodoro_dialog = PomodoroDialog(self._pomodoro_service)
+        dialog = self._pomodoro_dialog
+        inst = self.instance
+        if inst is not None:
+            inst._present_dialog(dialog)
+        else:
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+
+    def _pomodoro_notify(self, phase: str) -> None:
+        label = ('专注开始啦' if phase == 'focus' else
+                 '完成四轮，长休息一下' if phase == 'long_break' else
+                 '专注完成，短休息一下')
+        QApplication.beep()
+        tray = self.tray
+        if tray is not None:
+            tray.showMessage('小鲸鱼番茄钟', label,
+                             QSystemTrayIcon.MessageIcon.Information, 4500)
+
+    def _pomodoro_context(self) -> dict:
+        service = getattr(self, '_pomodoro_service', None)
+        return ({'pomodoro': service.clock.snapshot()}
+                if service is not None else {})
+
     def open_todo_panel(self) -> None:
         """打开待办管理面板（非模态单例；条目增删改即时落盘）。"""
         from .todo_panel import TodoPanelDialog
@@ -5116,6 +5172,7 @@ class AppShell:
             add_tray_action(menu, 'AI 对话', self.instance.open_chat)
             add_tray_action(menu, '快速对话（气泡）', self.instance.open_quick_chat)
             add_tray_action(menu, 'AI 设置', self.instance.open_chat_settings)
+        add_tray_action(menu, '番茄钟', self.open_pomodoro)
         add_tray_action(menu, '桌宠设置', self.instance.open_modern_settings)
 
         m_char = track_menu(menu.addMenu('切换角色'))

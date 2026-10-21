@@ -4476,6 +4476,9 @@ class OverlayShell(QObject):
         menu.addSeparator()
         # 与 legacy 托盘同口径：菜单先关、回调延到菜单关闭后执行（原生菜单跟踪
         # 会话里开窗/冒泡会被 AppKit 抑制，见 shared.run_after_menu_closed）。
+        app_shell = getattr(getattr(self, '_instance', None), 'shell', None)
+        if app_shell is not None:
+            add_tray_action(menu, "番茄钟", app_shell.open_pomodoro)
         add_tray_action(menu, "桌宠设置",
                         lambda: self.open_settings_for(self.sprite))
         # legacy 托盘两项（app.py:3333-3343）：鼠标穿透的取消入口只有托盘/设置页，

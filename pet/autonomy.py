@@ -159,7 +159,7 @@ class AutonomyService(QObject):
     def __init__(self, config, observe, execute, parent=None, *,
                  recent_dialogue=None, prefer_external_vision=None,
                  begin_sleep_loop=None, sleep_loop_active=None, end_sleep_loop=None,
-                 persona=None, can_speak=None):
+                 persona=None, can_speak=None, sleep_dragging=None):
         super().__init__(parent)
         self._config = config
         self._observe = observe
@@ -171,6 +171,7 @@ class AutonomyService(QObject):
         self._begin_sleep_loop = begin_sleep_loop or (lambda _animation: False)
         self._sleep_loop_active = sleep_loop_active or (lambda _animation: False)
         self._end_sleep_loop = end_sleep_loop or (lambda _animation: False)
+        self._sleep_dragging = sleep_dragging or (lambda: False)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._plan_timer = QTimer(self)
@@ -197,6 +198,7 @@ class AutonomyService(QObject):
         self._plan_from_chat = False
         self._plan_activity = ""
         self._plan_deadline = 0.0
+        self._plan_deadline_wall = 0.0
         self._plan_available = frozenset()
         self._plan_revision = 0
         self._accepted_repeats = []
@@ -360,6 +362,7 @@ class AutonomyService(QObject):
         self._plan_from_chat = False
         self._plan_activity = ""
         self._plan_deadline = 0.0
+        self._plan_deadline_wall = 0.0
         self._plan_available = frozenset()
         self._accepted_repeats = []
         self._plan_repeating = False
@@ -951,10 +954,17 @@ class AutonomyService(QObject):
         self._plan_steps.extend(steps)
         self._plan_total = len(steps)
         self._plan_name = ACTIVITY_CLIPS.get(intent.activity, ("自由活动", ()))[0]
+        if intent.activity == "nap":
+            hour = time.localtime().tm_hour
+            self._plan_name = ("夜间睡眠" if is_night() else
+                               "晨间补觉" if hour < 11 else
+                               "午睡" if hour < 14 else "下午小憩" if hour < 18
+                               else "晚间休息")
         self._plan_activity = intent.activity
         self._life_activity_started = False
         self._plan_available = frozenset(self._request_animations)
         self._plan_deadline = time.monotonic() + duration if duration else 0.0
+        self._plan_deadline_wall = time.time() + duration if duration else 0.0
         self._plan_from_chat = self._current_request_user
         self._plan_active = True
         self._recent_activities.append(intent.activity)
@@ -976,7 +986,8 @@ class AutonomyService(QObject):
         if not self._enabled or not self._plan_active or not self._sleep_held:
             self._activity_timer.stop()
             return
-        if time.monotonic() >= self._plan_deadline:
+        if (time.monotonic() >= self._plan_deadline
+                or (self._plan_deadline_wall and time.time() >= self._plan_deadline_wall)):
             self._cancel_plan()
             self._monitor.publish(state="休息结束，醒来继续活动",
                                   next_decision_at=time.time() + self._interval_seconds)
@@ -986,6 +997,14 @@ class AutonomyService(QObject):
         except (RuntimeError, TypeError, ValueError):
             active = False
         if not active:
+            # Both renderer backends consider an actively dragged sprite not
+            # ready, even when its held sleep clip is still visually playing.
+            # Dragging is a position edit, not a wake gesture.
+            try:
+                if self._sleep_dragging():
+                    return
+            except (RuntimeError, TypeError, ValueError):
+                pass
             self._cancel_plan(awakened=True)
             self._monitor.publish(state="主人叫醒了小鲸鱼，准备回应",
                                   next_decision_at=None)

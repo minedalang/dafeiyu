@@ -97,7 +97,7 @@ class WhaleLife:
             pending_sleep = data.get("sleep_until_at")
             if (isinstance(pending_sleep, (int, float))
                     and not isinstance(pending_sleep, bool)
-                    and self.updated_at < pending_sleep <= self.updated_at + 60 * 60 * 2):
+                    and self.updated_at < pending_sleep <= self.updated_at + 60 * 60 * 10):
                 self.sleep_until_at = float(pending_sleep)
             raw_events = data.get("events", ())
             if isinstance(raw_events, list):
@@ -155,7 +155,14 @@ class WhaleLife:
         if stamp < self.updated_at:
             self.updated_at = stamp  # Wall clock was corrected backwards.
             return
-        minutes = min(max(0.0, (stamp - self.updated_at) / 60.0), limit_minutes)
+        elapsed_minutes = max(0.0, (stamp - self.updated_at) / 60.0)
+        # A suspended GUI may miss hours of Qt timers without ever exiting.
+        # Route these gaps through the same calendar-aware settlement as restarts
+        # instead of crediting 60 minutes and discarding everything else.
+        if elapsed_minutes > limit_minutes and limit_minutes == 60:
+            self.reconcile_offline(now=stamp)
+            return
+        minutes = min(elapsed_minutes, limit_minutes)
         self.updated_at = stamp
         if not minutes:
             return
@@ -244,6 +251,9 @@ class WhaleLife:
                     night_minutes += part
                 else:
                     daytime_nap_minutes += part
+        # Live suspend catch-up may be called while the animation plan is still
+        # running. The planner will decide to end it when the wall deadline
+        # passes, so keep the intent until then; startup explicitly clears it.
         self.sleep_until_at = None
         if sleep_minutes >= 1:
             hours, minutes = divmod(int(round(sleep_minutes)), 60)
@@ -282,10 +292,9 @@ class WhaleLife:
         if activity not in _ACTIVITY_LABELS:
             return
         if activity == "nap" and sleep_until_at is not None:
-            # A normally planned nap lasts no more than 35 minutes. Leave a
-            # generous bound for interruptions/clock corrections, but never
-            # persist an unbounded AI-supplied time.
-            self.sleep_until_at = min(stamp + 2 * 3600,
+            # Online night sleep can last until morning (up to nine hours).
+            # The saved deadline is also consulted after Windows suspend.
+            self.sleep_until_at = min(stamp + 10 * 3600,
                                       max(stamp, float(sleep_until_at)))
         if activity in _MEALS:
             day = datetime.fromtimestamp(stamp).date().isoformat()
@@ -300,6 +309,8 @@ class WhaleLife:
         # Avoid a timeline flooded with identical work phases.
         if self.events and self.events[-1]["description"] == _ACTIVITY_LABELS[activity] \
                 and stamp - self.events[-1]["at"] < 600:
+            # Timeline deduplication must not suppress a new sleep deadline.
+            self.save(force=True)
             return
         self._record(_ACTIVITY_LABELS[activity], now=stamp)
         self.save(force=True)

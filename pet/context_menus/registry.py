@@ -89,6 +89,7 @@ ACTION_LABELS = {
     "check_update": "检查更新", "github_project": "GitHub 项目页",
     "quark_download": "夸克网盘下载", "agent_link": "Agent 联动",
     "proactive_screen": "主动识屏", "todo_panel": "待办提醒",
+    "pomodoro": "番茄钟",
     "quiet_mode": "免打扰",
     "weather": "查看天气", "weather_cities": "天气城市",
     "network_info": "网络信息",
@@ -119,6 +120,7 @@ ACTION_ICONS = {
     "deepseek_web": "web", "check_update": "update", "github_project": "web",
     "quark_download": "download", "agent_link": "automation",
     "proactive_screen": "screen", "todo_panel": "todo",
+    "pomodoro": "todo",
     "quiet_mode": "pause",
     "weather": "weather", "weather_cities": "weather",
     "network_info": "web",
@@ -206,6 +208,10 @@ def _build_settings(menu, pet):
 
 def _build_todo_panel(menu, pet):
     return add_action(menu, "待办提醒", "todo", pet.on_open_todo_panel, close_on_trigger=True)
+
+
+def _build_pomodoro(menu, pet):
+    return add_action(menu, "番茄钟", "todo", pet.on_open_pomodoro, close_on_trigger=True)
 
 
 def _build_voice_chime_now(menu, pet):
@@ -373,6 +379,9 @@ class MenuActionRegistry:
             ),
             "todo_panel": MenuActionSpec(
                 _build_todo_panel, _callback_available("on_open_todo_panel")
+            ),
+            "pomodoro": MenuActionSpec(
+                _build_pomodoro, _callback_available("on_open_pomodoro")
             ),
             "voice_chime_now": MenuActionSpec(
                 _build_voice_chime_now, _callback_available("on_voice_chime_now")

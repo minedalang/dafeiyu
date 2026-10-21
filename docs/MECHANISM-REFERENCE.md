@@ -23,8 +23,9 @@
 | 在线生命状态刷新 | 30 秒 | 代码常量 | `autonomy.py:_life_timer` |
 | 在线睡眠动画检查 | 500 毫秒 | 代码常量 | `autonomy.py:_activity_timer` |
 | 在线白天午睡 | 15～30 分钟，默认 20 | 代码边界 | `activity_lifecycle.py` |
-| 在线夜间短睡眠 | 20～35 分钟，默认 30 | 代码边界 | `activity_lifecycle.py` |
+| 在线夜间长睡眠 | 22:00～07:00，最多 9 小时，按开始时间到 07:00 | 代码规则 | `activity_lifecycle.py` |
 | 工作活动 | 5～15 分钟，默认 8 | 代码边界 | `activity_lifecycle.py` |
+| 番茄钟 | 默认专注 25 / 短休 5 / 长休 15 分钟，每 4 轮长休 | 右键菜单 / 托盘，`pomodoro-settings.json` | `pomodoro.py`、`pomodoro_dialog.py` |
 | 自动离线夜间睡眠 | 22:00～次日 07:00 | 电脑本地时间，代码常量 | `life_state.py` |
 | 离线补算上限 | 最近 24 小时 | 代码常量 | `life_state.py` |
 | 睡眠困意下降速率 | 每分钟 -0.90 | 代码常量 | `life_state.py:advance` |
@@ -80,12 +81,12 @@
 | 识屏授权和请求复用 | `VISION-AND-PRIVACY.md`、`AI-AUTONOMY.md`；检查开关四种组合及数据出境 |
 | 状态面板和本地 JSON 字段 | `DIAGNOSTICS-AND-DATA.md`、本页；检查读取旧数据及字段上下限 |
 
-可参考当前仓库专项测试：`pet/tests/test_whale_life.py`、`pet/tests/test_whale_sleep_drag_and_audit.py`、`pet/tests/test_ai_activity_plan.py`、`pet/tests/test_autonomy_activity_time.py`。**本次仅改文档，未宣称重新执行 Windows 真实桌面测试。**
+可参考当前仓库专项测试：`pet/tests/test_whale_life.py`、`pet/tests/test_whale_sleep_drag_and_audit.py`、`pet/tests/test_ai_activity_plan.py`、`pet/tests/test_autonomy_activity_time.py`。**本次更新已修改源码并运行无 Qt 测试；Windows 实机交互仍待验收。**
 
 ## 5. 尚未实现 / 不要写成已实现
 
-- **在线夜间一次连续睡 6～9 小时**：未加入；在线睡眠仍是短时 `nap` 计划。
+- **夜间睡眠安排**：已可从入睡时持续到当地 07:00，具体时长取决于开始时间；详见 [睡眠与番茄钟更新](SLEEP-POMODORO-2026-10-21.md)。
 - **睡眠快结束时 AI 判断是否赖床并延长当前计划**：未加入；当前不自动续期。
-- **按晨间/午间/夜间动态切换 `nap` 的界面名称**：未加入；部分界面仍固定显示“午睡”。
+- **按入睡时刻切换自主活动显示名称**：已区分夜间睡眠、晨间补觉、午睡、下午小憩、晚间休息。
 - **主动搭话失败后 30 秒自动重试/指数退避**：目前并未实现；失败后仍按普通间隔等待。
 - **真正检测用户本人睡眠、从关机时运行模型**：未实现，也不应这样表述。关机后没有程序运行，下次启动只是按本地时钟推算小鲸鱼的离线生活。

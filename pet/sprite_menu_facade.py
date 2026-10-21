@@ -424,6 +424,10 @@ class SpriteMenuFacade:
         return _first_callable(self._hosts(), ("open_todo_panel",))
 
     @property
+    def on_open_pomodoro(self):
+        return _first_callable(self._hosts(), ("open_pomodoro",))
+
+    @property
     def on_network_info(self):
         """「网络信息」：``AppShell.open_network_info``（进程级弹窗，与窗口版同一方法）。
 

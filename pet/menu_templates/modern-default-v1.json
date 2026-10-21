@@ -66,6 +66,7 @@
     {"type": "action", "id": "agent_link", "visible": true, "section": "tools"},
     {"type": "action", "id": "proactive_screen", "visible": true, "section": "tools"},
     {"type": "action", "id": "todo_panel", "visible": true, "section": "tools"},
+    {"type": "action", "id": "pomodoro", "visible": true, "section": "tools"},
     {"type": "action", "id": "quiet_mode", "visible": true, "section": "tools"},
     {"type": "action", "id": "memory_trim", "visible": true, "section": "tools"},
     {"type": "action", "id": "weather", "visible": true, "section": "tools"},

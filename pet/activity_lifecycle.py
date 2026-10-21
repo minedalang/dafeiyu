@@ -7,7 +7,7 @@ hours or replay an unsupported animation indefinitely.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 # Minimum/maximum/ordinary duration in minutes. Only pre-existing animations
@@ -56,7 +56,13 @@ def duration_seconds(activity: str, proposed_minutes=None, *,
         return 0
     low, high, ordinary = values
     if activity == "nap" and is_night(now):
-        low, high, ordinary = 20, 35, 30
+        # Real overnight sleep: aim for a normal 07:00 waking boundary.
+        # Starting at 23:00 -> eight hours; 05:30 -> 1.5h remaining.
+        local = now or datetime.now().astimezone()
+        wake = local.replace(hour=7, minute=0, second=0, microsecond=0)
+        if wake <= local:
+            wake += timedelta(days=1)
+        return int(max(60, min(9 * 3600, (wake - local).total_seconds())))
     if isinstance(proposed_minutes, (int, float)) and not isinstance(proposed_minutes, bool):
         try:
             proposed = float(proposed_minutes)
