@@ -620,6 +620,8 @@ class PetInstance:
         # 窗口在"用户点了桌宠"时回调（当天没看才提示一行）。
         win.on_divination_draw = self._slot_wrap(self.shell.trigger_divination_draw)
         win.on_user_interaction = self._slot_wrap(self.shell._on_legacy_pet_clicked)
+        win.on_should_play_click = self._slot_wrap(self.shell._autonomy_click_allowed)
+        win.on_autonomy_activity_active = self._slot_wrap(self.shell._autonomy_activity_active)
         win.on_ai_click_enabled = self._slot_wrap(
             lambda: bool(getattr(self.shell, "_autonomy", None)
                          and self.shell._autonomy.enabled))
@@ -2113,6 +2115,18 @@ class AppShell:
         service = getattr(self, "_autonomy", None)
         if service is not None and service.enabled:
             service.queue_user_click()
+
+    def _autonomy_click_allowed(self, global_pos=None) -> bool:
+        """A single tap must not wake or replace an ongoing AI activity."""
+        service = getattr(self, "_autonomy", None)
+        if service is None or not service.enabled:
+            return True
+        return service.allow_user_click_interrupt(global_pos)
+
+    def _autonomy_activity_active(self) -> bool:
+        service = getattr(self, "_autonomy", None)
+        return bool(service is not None and service.enabled
+                    and getattr(service, "_plan_active", False))
 
     def _on_legacy_pet_clicked(self) -> None:
         """Legacy hook keeps the daily fortune hint and adds optional AI text."""

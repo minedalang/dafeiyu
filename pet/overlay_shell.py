@@ -846,6 +846,10 @@ class ShellOverlayWindow(OverlayWindow):
         self._press_pos = event.position()
         super().mousePressEvent(event)
 
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        # Keep grab/press bookkeeping for Qt's second-click event as well.
+        self.mousePressEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         if self.slingshot.aiming:
             # 弹弓瞄准中的左键松手 = 发射（基类已消费），不进单击/拖拽判别
@@ -866,6 +870,9 @@ class ShellOverlayWindow(OverlayWindow):
         # 与旧机两处闸门「取消拖拽但保留点击」语义一致
         if click_only or (not committed
                           and (event.position() - press).manhattanLength() < threshold):
+            click_guard = getattr(self, "_allow_sprite_click", None)
+            if callable(click_guard) and not click_guard(grab, event.globalPosition().toPoint()):
+                return  # Ignore accidental single taps during long AI activities.
             # 边缘探头消费点击（PEEKING 拉直/STRAIGHTENED 重置倒计时）时，
             # 抑制点击反应与点击音效——拉直本身就是反馈
             if probe is not None and probe.on_sprite_clicked(grab):
@@ -1523,6 +1530,7 @@ class OverlayShell(QObject):
         overlay.click_feedback = self._click_feedback
         # 点击气泡族（余额/点击自言自语）+ 点击音效：与 click_feedback 同位置注入
         overlay._on_sprite_click = self._on_sprite_click
+        overlay._allow_sprite_click = self._allow_sprite_click
         # M5e：点击触发黄金回旋路由（与 _on_sprite_click 同位置注入）
         overlay._click_route_spin = self._route_click_golden_spin
         # 4.1c 弹弓：controller 壳内一份，这里只接 config
@@ -3225,6 +3233,14 @@ class OverlayShell(QObject):
         if host is None:
             return False
         return bool(window_alerts.show_click_self_talk(host, click_name))
+
+    def _allow_sprite_click(self, sprite, global_pos=None) -> bool:
+        """Only the main AI pet needs double-click protection during a plan."""
+        if sprite is not self.sprite:
+            return True
+        shell = getattr(self._instance, "shell", None)
+        guard = getattr(shell, "_autonomy_click_allowed", None)
+        return bool(guard(global_pos)) if callable(guard) else True
 
     def _on_sprite_click(self, sprite, click_name: str) -> None:
         """单击 sprite 后的点击分支（``window.py:3370-3377`` 的 sprite 等价物）。

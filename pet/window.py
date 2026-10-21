@@ -3239,20 +3239,30 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
             # 向窗口内方向跳变一个偏移量。
             self._grab_offset = self._press_global - self._virtual_pos()
             self._dragging = False
-            self._cancel_move()  # 按下即打断移动
-            self._clear_drag_move()  # 丢弃上一次拖拽遗留的未消费合帧目标（防御）
+            activity_held = getattr(self, "on_autonomy_activity_active", None)
+            protected = callable(activity_held) and activity_held()
+            if not protected:
+                self._cancel_move()  # 非 AI 持续活动保持原有按下即停止移动的语义
+                self._clear_drag_move()  # 未保护的普通点击沿用原有鼠标按下语义
             self._last_global = self._press_global
             self._last_move_time = time.monotonic()
             self._trail = [(self._last_move_time, self._press_global.x(), self._press_global.y())]
-            self._phys_vel = [0.0, 0.0]
+            if not protected:
+                self._phys_vel = [0.0, 0.0]
             _vp = self._virtual_pos()
             self._phys_pos = [float(_vp.x()), float(_vp.y())]
-            self._stop_physics()
+            if not protected:
+                self._stop_physics()
             self.setFocus(Qt.FocusReason.OtherFocusReason)
             self._update_interaction_hold()  # 左键按住 → 低优先级预热让路
             event.accept()
         else:
             super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        # Qt sends MouseButtonDblClick for the second press. Route that press
+        # through the same bookkeeping so its release can wake a protected pet.
+        self.mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         # 拖拽/弹弓瞄准中的移动 = 交互：刷新闲置降帧的活跃锚点
@@ -3281,6 +3291,7 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
                 return
             self._dragging = True
             self._interaction_state = "DRAGGING"
+            self._cancel_move()  # 真正越过拖拽阈值后才让用户接管移动
             # 多屏：拖拽期间允许越屏（一次交互取一次快照，物理 tick 里只读它）
             self._interaction_area = window_placement.desktop_area()
             self._effects_on_drag_started()
@@ -3390,12 +3401,13 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
                 play_press_sound(self._press_sound_pair, volume)
                 play_release_sound(self._press_sound_pair, volume)
             if not self._try_open_quick_chat_from_bubble(g):
-                self._on_click()
-                # 每日一签：每天第一次点桌宠给一行提示（钩子由 app.py 以公有属性
-                # 注入，未注入时无操作——与语音报时的窗口钩子同一手法）。
-                hint = getattr(self, "on_user_interaction", None)
-                if callable(hint):
-                    hint()
+                allow_click = getattr(self, "on_should_play_click", None)
+                if not callable(allow_click) or allow_click(g):
+                    self._on_click()
+                    # 每日一签：每天第一次点桌宠给一行提示（钩子由 app.py 注入）。
+                    hint = getattr(self, "on_user_interaction", None)
+                    if callable(hint):
+                        hint()
         self._dragging = False
         self._interaction_state = "IDLE"
         self._press_global = None

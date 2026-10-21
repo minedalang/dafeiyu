@@ -229,6 +229,8 @@ class AutonomyService(QObject):
         self._speech_interval_max_seconds = 360
         self._speech_next_at = time.monotonic() + self._next_speech_delay()
         self._last_click_request_at = float("-inf")
+        self._protected_click_at = float("-inf")
+        self._protected_click_pos = None
         self._speaking_for_click = False
         # One most-recent foreground-window frame, kept in RAM only. The
         # observer and autonomous planner must not each charge an API request.
@@ -329,6 +331,7 @@ class AutonomyService(QObject):
         # Settle the elapsed time into the *previous* activity before clearing
         # it. In particular, cancellation cannot erase 20 minutes of sleep.
         self._life.advance(activity=self._plan_activity if self._plan_active else None)
+        self._life.end_activity(self._plan_activity)
         if awakened and self._sleep_held:
             self._life.awakened()
         self._life.save(force=True)
@@ -437,6 +440,44 @@ class AutonomyService(QObject):
         # The normal animation/click sounds should already be visible before
         # the optional text is prepared; no animation is changed here.
         QTimer.singleShot(850, lambda: self._try_click_speech(0))
+
+    def allow_user_click_interrupt(self, global_pos=None) -> bool:
+        """Protect an ongoing activity from a stray click; double-click wakes.
+
+        Called *before* the legacy or overlay renderer switches to its normal
+        click animation. This gate is intentionally independent of the 12 s
+        API rate limit: a double click is one user interaction, not two calls.
+        """
+        if not self._enabled or not self._plan_active:
+            self._protected_click_at = float("-inf")
+            self._protected_click_pos = None
+            return True
+
+        try:
+            if isinstance(global_pos, (tuple, list)):
+                point = (int(global_pos[0]), int(global_pos[1]))
+            else:
+                point = (int(global_pos.x()), int(global_pos.y()))
+        except (AttributeError, IndexError, TypeError, ValueError):
+            point = None
+        now = time.monotonic()
+        former = self._protected_click_pos
+        near = (former is None or point is None or
+                (point[0] - former[0]) ** 2 + (point[1] - former[1]) ** 2 <= 36 ** 2)
+        if now - self._protected_click_at <= 0.55 and near:
+            self._protected_click_at = float("-inf")
+            self._protected_click_pos = None
+            was_sleeping = self._sleep_held
+            self._cancel_plan(awakened=True)
+            self._monitor.publish(
+                state="用户双击叫醒，等待新活动" if was_sleeping else "用户双击结束当前活动",
+                next_decision_at=time.time() + self._interval_seconds)
+            return True
+
+        self._protected_click_at = now
+        self._protected_click_pos = point
+        self._monitor.publish(state=f"正在执行活动：{self._plan_name}（单击不打断，双击可中断）")
+        return False
 
     def _try_click_speech(self, attempt: int) -> None:
         if not self._enabled:
@@ -1077,7 +1118,11 @@ class AutonomyService(QObject):
             self._recent_clips.append(intent.animation)
             if not self._life_activity_started and (self._plan_activity != "nap" or sleep_step):
                 self._life_activity_started = True
-                self._life.start_activity(self._plan_activity)
+                self._life.start_activity(
+                    self._plan_activity,
+                    sleep_until_at=(time.time() + max(0.0, self._plan_deadline - time.monotonic())
+                                    if sleep_step else None),
+                )
                 self._monitor.publish(life_state=self._life.snapshot())
         elif executed and intent.verb == "say" and self._plan_activity == "social" \
                 and not self._life_activity_started:

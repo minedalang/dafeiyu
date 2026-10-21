@@ -11,13 +11,18 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, time as clock_time, timedelta
 from pathlib import Path
 
 
 log = logging.getLogger(__name__)
 _FILENAME = "whale-life-state.json"
 _VERSION = 1
+# Offline simulation is limited to the most recent day; a week without the pet
+# running must not credit a week of sleep or create an extreme hunger debt.
+_MAX_OFFLINE_HOURS = 24
+_NIGHT_START = clock_time(22, 0)
+_NIGHT_END = clock_time(7, 0)
 _DEFAULTS = {"energy": 78.0, "hunger": 27.0,
              "sleepiness": 22.0, "mood": 72.0}
 _MEALS = frozenset({"breakfast", "lunch", "dinner"})
@@ -53,17 +58,22 @@ class WhaleLife:
         self.values = dict(_DEFAULTS)
         self.events: list[dict] = []
         self.meals: dict[str, str] = {}
+        # The end of an accepted nap, persisted to recover a nap interrupted by
+        # shutdown. Night sleep is inferred independently from the local clock.
+        self.sleep_until_at: float | None = None
         self.updated_at = float(time.time() if now is None else now)
         self._last_saved_at = 0.0
         self._load()
-        # Time since closing the program is passive rest, not a phantom work
-        # activity. A night crossing permits recovering some lost sleep.
+        # Restart after shutdown: simulate the real local night, even if the
+        # app was closed before bedtime. Daytime only counts as sleep when an
+        # *accepted* nap was in progress before the app exited unexpectedly.
         catchup = float(time.time() if now is None else now)
         if catchup > self.updated_at:
-            then, current = datetime.fromtimestamp(self.updated_at), datetime.fromtimestamp(catchup)
-            overnight = then.date() < current.date() and then.hour >= 20 and current.hour <= 10
-            self.advance(now=catchup, activity="nap" if overnight else None,
-                         limit_minutes=240 if overnight else 120)
+            self.reconcile_offline(now=catchup)
+        elif self.sleep_until_at is not None:
+            # A new process never inherits the *active* animation state.
+            self.sleep_until_at = None
+            self.save(force=True)
 
     def _load(self) -> None:
         if self.path is None:
@@ -81,6 +91,11 @@ class WhaleLife:
             timestamp = data.get("updated_at")
             if isinstance(timestamp, (int, float)) and 0 < timestamp <= self.updated_at + 60:
                 self.updated_at = float(timestamp)
+            pending_sleep = data.get("sleep_until_at")
+            if (isinstance(pending_sleep, (int, float))
+                    and not isinstance(pending_sleep, bool)
+                    and self.updated_at < pending_sleep <= self.updated_at + 60 * 60 * 2):
+                self.sleep_until_at = float(pending_sleep)
             raw_events = data.get("events", ())
             if isinstance(raw_events, list):
                 self.events = [item for item in raw_events[-12:]
@@ -105,7 +120,8 @@ class WhaleLife:
         temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
         payload = {"version": _VERSION, "updated_at": self.updated_at,
                    "needs": self.values, "events": self.events[-12:],
-                   "meals": self.meals}
+                   "meals": self.meals,
+                   "sleep_until_at": self.sleep_until_at}
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -157,17 +173,83 @@ class WhaleLife:
             self.values["mood"] + (68 - self.values["mood"]) * min(0.05, minutes / 600),
             _DEFAULTS["mood"])
 
+    def reconcile_offline(self, *, now: float | None = None) -> float:
+        """Settle a shutdown/suspend gap using *local* sleep hours.
+
+        Only 22:00..07:00 is automatic night sleep. An explicitly accepted
+        daytime nap continues only until its saved end time. The last 24h
+        and one night are the limit; older gaps cannot farm arbitrary gains.
+        The last-settled timestamp is saved immediately for idempotent restart.
+        Returns the number of offline minutes credited as sleep.
+        """
+        end = float(time.time() if now is None else now)
+        start = self.updated_at
+        if end <= start:
+            return 0.0
+        # Don't simulate several missed days, even when the program was closed
+        # for a week. The final day represents the whale's current rhythm.
+        start = max(start, end - _MAX_OFFLINE_HOURS * 3600)
+        self.updated_at = start
+        # In local time, the nightly interval spans midnight. Constructing each
+        # boundary as a local timestamp also handles UTC offset changes.
+        first_day = datetime.fromtimestamp(start).date() - timedelta(days=1)
+        last_day = datetime.fromtimestamp(end).date()
+        sleep_intervals = []
+        day = first_day
+        while day <= last_day:
+            bedtime = datetime.combine(day, _NIGHT_START).timestamp()
+            wake_time = datetime.combine(day + timedelta(days=1), _NIGHT_END).timestamp()
+            if wake_time > start and bedtime < end:
+                sleep_intervals.append((max(start, bedtime), min(end, wake_time)))
+            day += timedelta(days=1)
+        if self.sleep_until_at is not None and self.sleep_until_at > start:
+            sleep_intervals.append((start, min(end, self.sleep_until_at)))
+        points = {start, end}
+        for left, right in sleep_intervals:
+            if left < right:
+                points.add(left)
+                points.add(right)
+        sleep_minutes = 0.0
+        boundaries = sorted(points)
+        for left, right in zip(boundaries, boundaries[1:]):
+            if right <= left:
+                continue
+            sleeping = any(a <= left and right <= b for a, b in sleep_intervals)
+            self.advance(now=right, activity="nap" if sleeping else None,
+                         limit_minutes=_MAX_OFFLINE_HOURS * 60)
+            if sleeping:
+                sleep_minutes += (right - left) / 60
+        self.sleep_until_at = None
+        if sleep_minutes >= 1:
+            hours, minutes = divmod(int(round(sleep_minutes)), 60)
+            summary = f"离线睡眠 {hours} 小时 {minutes} 分钟，已恢复精力和困意"
+            self._record(summary, now=end)
+        self.save(force=True)
+        return sleep_minutes
+
+    def end_activity(self, activity: str) -> None:
+        """Clear nap intent only after the elapsed sleep was settled."""
+        if activity == "nap":
+            self.sleep_until_at = None
+
     def _record(self, description: str, *, now: float | None = None) -> None:
         stamp = float(time.time() if now is None else now)
         self.events.append({"at": stamp, "description": description})
         self.events = self.events[-12:]
 
-    def start_activity(self, activity: str, *, now: float | None = None) -> None:
+    def start_activity(self, activity: str, *, now: float | None = None,
+                       sleep_until_at: float | None = None) -> None:
         """Called once after an action is accepted, never on local loop replay."""
         stamp = float(time.time() if now is None else now)
         self.advance(now=stamp)
         if activity not in _ACTIVITY_LABELS:
             return
+        if activity == "nap" and sleep_until_at is not None:
+            # A normally planned nap lasts no more than 35 minutes. Leave a
+            # generous bound for interruptions/clock corrections, but never
+            # persist an unbounded AI-supplied time.
+            self.sleep_until_at = min(stamp + 2 * 3600,
+                                      max(stamp, float(sleep_until_at)))
         if activity in _MEALS:
             day = datetime.fromtimestamp(stamp).date().isoformat()
             # One credited meal per local date even if the AI reselects it.
