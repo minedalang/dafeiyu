@@ -15,7 +15,7 @@
 | API Key | 使用你自己的、支持 AppClaude 的 4Router Key |
 | 深度思考 | 「跟随模型默认」最稳妥；启用后可直接输入 low / medium / high / xhigh / max 或其他模型要求的合法值 |
 
-桌宠会自动连接 `https://4router.net/v1/messages`，系统提示词以顶层 `system` 发送。`frameseq`、视频素材与此无关。
+**安装显式协议选择补丁后**，请在「模型与连接 → API 请求协议」选择 **Anthropic / Claude Messages**。以 `https://4router.net/v1` 为根地址时，请求发往 `https://4router.net/v1/messages`，系统提示词以顶层 `system` 发送。详情见 [API 请求协议](API-PROTOCOL-SELECTION.md)。
 
 不要把完整 API Key 贴给任何人，也不要在截图中展示它。
 
@@ -35,7 +35,7 @@
 
 Claude Messages 原生 API 不允许请求初始 `messages[0]` 携带有文字内容的 `system` 角色。之前 `pet/autonomy.py` 中两个非流式请求直接使用 OpenAI `_open()`，而聊天窗口已经有 `_to_anthropic_payload()` 的协议转换。
 
-现在自主决策与搭话复用 `OpenAICompatibleProvider._complete_json()` 的 Claude 分支：自动提取顶层 `system`、转换角色/图片格式、读取 Claude `content` 文本数组。
+现在自主决策与搭话统一调用 `OpenAICompatibleProvider._complete_json()`；按 Provider 明确选定的协议转换并解析响应。Claude Messages 分支会提取顶层 `system`、转换角色/图片格式、读取 `content` 文本数组。
 
 ## 检查步骤
 
@@ -61,7 +61,7 @@ Claude Messages 原生 API 不允许请求初始 `messages[0]` 携带有文字�
 
 - 保存后原文保留；切换不同 Provider 时每个 Provider 分别保存自己的值。
 - 「跟随模型默认」不发送额外强度；「开启」+ **留空**也不发送强度。
-- 非 Claude 原生接口仍走先前的 OpenAI 兼容发送方式，即 `reasoning_effort`；`thinking.type` 行为不变。并非每个 OpenAI 兼容网关都支持此字段；遇到 400 请依网关官方文档调整。
+- 明确选择 Chat Completions 时使用 `reasoning_effort`，选择 Responses 时使用 `reasoning.effort`；DeepSeek 官方接口才额外保留 `thinking.type`。并非每个 OpenAI 兼容网关都支持此字段；遇到 400 请依网关官方文档调整。
 - 旧 Claude 的自定义值也会发送，由服务端检查是否支持；不再静默降级成 high。
 - **后台自主行为/主动搭话**之前为了减少延迟使用内置 `low` 低思考强度；此处设置首先影响聊天窗口，后台策略不在本次补丁中变更。
 - 「关闭深度思考」不是自定义等级值；对于支持 effort 的 Claude 模型，这一模式沿用低强度策略。

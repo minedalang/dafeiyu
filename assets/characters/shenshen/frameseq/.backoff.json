@@ -2,8 +2,8 @@
  "version": 1,
  "clips": {
   "random/小提琴演奏": {
-   "failures": 7,
-   "retry_after": 1792559628.9116492,
+   "failures": 8,
+   "retry_after": 1792600823.167865,
    "error": "半成品目录无法清理: [WinError 5] 拒绝访问。: 'G:\\\\WorkSpace\\\\WorkspacePython\\\\dafeiyu-ai-windows-conda-test\\\\assets\\\\characters\\\\shens"
   }
  }

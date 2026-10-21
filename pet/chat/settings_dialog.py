@@ -252,6 +252,7 @@ class ChatSettingsDialog(QDialog):
             vision_base_url=base.vision_base_url,
             vision_api_key_ref=f'provider/{new_id}/vision',
             verify_ssl=base.verify_ssl,
+            api_protocol=base.api_protocol,
         )
         self.settings.providers[new_id] = new
         # 复制当前草稿（不含 Key），方便基于同一份参数快速修改
@@ -360,6 +361,7 @@ class ChatSettingsDialog(QDialog):
             float(self.temp.value()),
             int(self.tokens.value()),
             verify_ssl=not self.skip_ssl.isChecked(),
+            api_protocol=p.api_protocol,
         )
 
     def _run_test(self):

@@ -72,6 +72,11 @@ class _AiSettingsPage(QWidget):
         self.name = _line_edit(provider.name)
         self.url = _line_edit(provider.base_url)
         self.model = _line_edit(provider.model)
+        self.api_protocol = ModernSelect(self, width=260)
+        self.api_protocol.addItem('OpenAI Chat Completions', 'openai_chat')
+        self.api_protocol.addItem('OpenAI Responses', 'openai_responses')
+        self.api_protocol.addItem('Anthropic / Claude Messages', 'anthropic_messages')
+        self.api_protocol.setCurrentData(provider.api_protocol)
         self.key = _line_edit(password=True)
         self.prompt = QPlainTextEdit(self.settings.default_system_prompt)
         self.prompt.setMinimumSize(240, 80)
@@ -258,7 +263,10 @@ class _AiSettingsPage(QWidget):
         ], self))
         root.addWidget(SettingsSection("模型与连接", [
             SettingRow("provider_name", "Provider 名称", "用于区分当前使用的模型服务。", self.name),
-            SettingRow("api_url", "API 地址", "OpenAI Chat Completions 兼容服务地址。", self.url),
+            SettingRow("api_protocol", "API 请求协议",
+                       "显式选择每个 Provider 使用的协议（无自动识别）；聊天、自主决策、主动搭话和联网检索共用。",
+                       self.api_protocol),
+            SettingRow("api_url", "API 地址", "当前协议的 API 根地址，如 https://4router.net/v1。", self.url),
             SettingRow("model", "模型", "发送请求时使用的模型标识。", self.model),
             SettingRow("api_key", "API Key", "凭据优先保存到系统钥匙串。", self.key),
             SettingRow("system_prompt", "小鲸鱼性格 / 说话风格 (System Prompt)",
@@ -745,6 +753,7 @@ class _AiSettingsPage(QWidget):
         self._provider_drafts[pid] = {
             "name": self.name.text().strip(),
             "base_url": self.url.text().strip(),
+            "api_protocol": str(self.api_protocol.currentData() or "openai_chat"),
             "model": self.model.text().strip(),
             # 输入框为空表示“不修改/不覆盖”，保留草稿里已录入但尚未保存的 Key；
             # 否则 _load_provider_ui() 清空输入框后会把草稿 Key 覆盖成空。
@@ -770,6 +779,7 @@ class _AiSettingsPage(QWidget):
         self.name.setText(draft.get("name") if draft.get("name") is not None else p.name)
         self.url.setText(draft.get("base_url") if draft.get("base_url") is not None else p.base_url)
         self.model.setText(draft.get("model") if draft.get("model") is not None else p.model)
+        self.api_protocol.setCurrentData(draft.get("api_protocol", p.api_protocol))
         self.key.clear()
         self.timeout.setValue(int(draft.get("timeout", p.timeout)))
         self.temperature.setValue(float(draft.get("temperature", p.temperature)))
@@ -821,6 +831,7 @@ class _AiSettingsPage(QWidget):
             verify_ssl=base.verify_ssl,
             thinking=base.thinking,
             reasoning_effort=base.reasoning_effort,
+            api_protocol=base.api_protocol,
         )
         self.settings.providers[new_id] = new
         self._provider_drafts[new_id] = {
@@ -838,6 +849,7 @@ class _AiSettingsPage(QWidget):
             "verify_ssl": new.verify_ssl,
             "thinking": new.thinking,
             "reasoning_effort": new.reasoning_effort,
+            "api_protocol": new.api_protocol,
         }
         self._loading_provider = True
         try:
@@ -891,6 +903,7 @@ class _AiSettingsPage(QWidget):
         p.verify_ssl = bool(draft.get("verify_ssl", p.verify_ssl))
         p.thinking = str(draft.get("thinking", p.thinking) or "auto")
         p.reasoning_effort = str(draft.get("reasoning_effort", p.reasoning_effort) or "").strip()
+        p.api_protocol = str(draft.get("api_protocol", p.api_protocol) or "openai_chat")
         key = str(draft.get("key") or "")
         if key:
             p.api_key_ref = p.api_key_ref or f"provider/{provider_id}"
@@ -938,6 +951,7 @@ class _AiSettingsPage(QWidget):
             verify_ssl=not self.skip_ssl.isChecked(),
             thinking=str(self.thinking_mode.currentData() or "auto"),
             reasoning_effort=str(self.reasoning_effort.text().strip()),
+            api_protocol=str(self.api_protocol.currentData() or "openai_chat"),
         )
 
     def _run_test(self) -> None:

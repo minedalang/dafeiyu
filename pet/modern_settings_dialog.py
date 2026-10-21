@@ -1965,6 +1965,7 @@ class ModernSettingsDialog(QDialog):
                         "模型与连接",
                         claim(
                             "provider_name",
+                            "api_protocol",
                             "api_url",
                             "model",
                             "api_key",

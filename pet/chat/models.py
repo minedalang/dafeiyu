@@ -30,6 +30,7 @@ def _safe_int(v, default, lo=None, hi=None):
 
 THINKING_MODES=('auto','enabled','disabled')
 REASONING_EFFORTS=('low','medium','high','xhigh','max')  # 常用示例，不限制自定义值
+API_PROTOCOLS = ('openai_chat', 'openai_responses', 'anthropic_messages')
 WEB_SEARCH_ENGINES=('baidu','duckduckgo','bocha','tavily')
 # 需要 API Key 的搜索引擎（其余为免 Key 的网页抓取）
 WEB_SEARCH_KEYED_ENGINES=('bocha','tavily')
@@ -37,6 +38,26 @@ WEB_SEARCH_KEYED_ENGINES=('bocha','tavily')
 def _choice(v, choices, default):
     v=str(v or '').strip().lower()
     return v if v in choices else default
+
+
+def _legacy_protocol(raw: dict) -> str:
+    """One-time upgrade from pre-selector behavior; never guess for new saves.
+
+    Prior version routed Claude models on 4router.net / api.anthropic.com
+    to the Messages API or honored explicit /v1/messages. Preserve that
+    behavior only when reading an old provider without api_protocol.
+    """
+    from urllib.parse import urlsplit
+    base = str(raw.get('base_url') or '').strip()
+    host = (urlsplit(base).hostname or '').lower()
+    path = (urlsplit(base).path or '').rstrip('/')
+    chat_path = str(raw.get('chat_path') or '').rstrip('/')
+    model = str(raw.get('model') or '').lower().split('/')[-1]
+    if path.endswith('/v1/messages') or chat_path.endswith('/v1/messages') or (
+        model.startswith('claude-') and host in {'4router.net', 'api.anthropic.com'}
+    ):
+        return 'anthropic_messages'
+    return 'openai_chat'
 
 
 def _effort_text(value, default='high') -> str:
@@ -71,6 +92,7 @@ class ProviderConfig:
     name: str='DeepSeek'; base_url: str='https://api.deepseek.com'; chat_path: str='/v1/chat/completions'; model: str='deepseek-v4-flash'; api_key_ref: str=''; api_key: str=''; timeout: float=60.0; temperature: float=0.7; max_tokens: int=2048; vision_model: str=''; vision_same_as_chat: bool=True; vision_base_url: str=''; vision_api_key_ref: str=''; vision_api_key: str=''; verify_ssl: bool=True
     # 深度思考：auto=不发送思考参数（沿用服务端默认；DeepSeek V4 默认开启思考）；enabled/disabled=显式开关
     thinking: str='auto'; reasoning_effort: str='high'
+    api_protocol: str='openai_chat'  # Explicit per-provider; never infer at request time
     # 运行时注入的联网搜索设置（来自 ChatSettings.web_search，不随 provider 落盘）
     web_search: Any=field(default=None, repr=False, compare=False)
     @classmethod
@@ -79,6 +101,7 @@ class ProviderConfig:
         c.vision_model=str(raw.get('vision_model','')); c.vision_same_as_chat=bool(raw.get('vision_same_as_chat',True))
         c.vision_base_url=str(raw.get('vision_base_url','')); c.vision_api_key_ref=str(raw.get('vision_api_key_ref','')); c.vision_api_key=str(raw.get('vision_api_key',''))
         c.thinking=_choice(raw.get('thinking','auto'),THINKING_MODES,'auto'); c.reasoning_effort=_effort_text(raw.get('reasoning_effort','high'))
+        c.api_protocol = _choice(raw['api_protocol'] if 'api_protocol' in raw else _legacy_protocol(raw), API_PROTOCOLS, 'openai_chat')
         return c
     def to_dict(self,include_secret=True):
         d=asdict(self); d.pop('provider_id',None); d.pop('web_search',None)

@@ -67,11 +67,16 @@ def test_connection(config, timeout: float = 10.0):
     """发送一个最小的非流式请求验证端点连通性（含 TLS 校验）。
     返回 (ok: bool, message: str)，供设置界面"测试连接"使用，不写入任何状态。"""
     try:
-        payload = {'model': config.model, 'messages': [{'role': 'user', 'content': 'ping'}], 'max_tokens': 1, 'stream': False}
+        payload = {'model': config.model, 'messages': [{'role': 'user', 'content': 'ping'}], 'max_tokens': 32, 'stream': False}
         if uses_anthropic_messages(config):
             endpoint = normalize_anthropic_endpoint(config.base_url)
             payload = _to_anthropic_payload(payload)
             headers = _anthropic_headers(config, 'application/json')
+        elif uses_openai_responses(config):
+            endpoint = normalize_responses_endpoint(config.base_url)
+            payload = _to_responses_payload(payload)
+            headers = build_browser_headers({'Content-Type': 'application/json'})
+            if config.api_key: headers['Authorization'] = f'Bearer {config.api_key}'
         else:
             endpoint = normalize_chat_endpoint(config.base_url, config.chat_path)
             headers = build_browser_headers({'Content-Type': 'application/json'})
@@ -92,35 +97,58 @@ def test_connection(config, timeout: float = 10.0):
     except OSError as exc:
         return False, f'网络请求失败：{exc}'
 
-def normalize_chat_endpoint(base_url,chat_path='/v1/chat/completions'):
-    base=str(base_url or '').strip().rstrip('/'); path=str(chat_path or '/v1/chat/completions').strip(); path=path if path.startswith('/') else '/'+path
-    if base.endswith('/chat/completions'): return base
-    # base 已带版本段（/v1、/v4 等 OpenAI 兼容路径，如智谱 /api/paas/v4）→ 只补 /chat/completions
-    if path=='/v1/chat/completions' and _re.search(r'/v\d+$',base): return base+'/chat/completions'
-    return base+path
+def _clean_endpoint_base(base_url: str) -> str:
+    base = str(base_url or '').strip().rstrip('/')
+    for suffix in ('/chat/completions', '/responses', '/messages'):
+        if base.endswith(suffix):
+            return base[:-len(suffix)]
+    return base
+
+
+def normalize_chat_endpoint(base_url, chat_path='/v1/chat/completions'):
+    base = _clean_endpoint_base(base_url)
+    path = str(chat_path or '/v1/chat/completions').strip()
+    # Selecting Chat Completions overrides legacy stored /messages paths.
+    if path.endswith('/messages') or path.endswith('/responses'):
+        path = '/v1/chat/completions'
+    if base.endswith('/chat/completions'):
+        return base
+    if path == '/v1/chat/completions' and _re.search(r'/v\d+$',base):
+        return base + '/chat/completions'
+    return base + (path if path.startswith('/') else '/' + path)
+
+
+def normalize_responses_endpoint(base_url: str) -> str:
+    base = _clean_endpoint_base(base_url)
+    if _re.search(r'/v\d+$', base):
+        return base + '/responses'
+    return base + '/v1/responses'
 
 class ProviderError(RuntimeError):
     def __init__(self,message,status=None): self.status=status; super().__init__(f'HTTP {status}: {message}' if status else message)
 
 
-def uses_anthropic_messages(config) -> bool:
-    """Use the native wire format only for explicit Messages URLs and known gateways.
+def protocol_of(config) -> str:
+    """The user's explicit choice is authoritative; never route by model name."""
+    protocol = getattr(config, 'api_protocol', 'openai_chat')
+    if protocol not in ('openai_chat', 'openai_responses', 'anthropic_messages'):
+        raise ProviderError(f'未知 API 协议：{protocol}')
+    return protocol
 
-    Other OpenAI-compatible providers may already translate Claude models; do
-    not silently change their requests. 4Router's AppClaude route is native.
-    """
-    base = str(getattr(config, 'base_url', '') or '').strip()
-    host = (urlsplit(base).hostname or '').lower()
-    path = (urlsplit(base).path or '').rstrip('/')
-    chat_path = str(getattr(config, 'chat_path', '') or '').rstrip('/')
-    explicit = path.endswith('/v1/messages') or chat_path.endswith('/v1/messages')
-    model = str(getattr(config, 'model', '') or '').lower().split('/')[-1]
-    return explicit or (model.startswith('claude-') and host in {'4router.net', 'api.anthropic.com'})
+
+def uses_anthropic_messages(config) -> bool:
+    return protocol_of(config) == 'anthropic_messages'
+
+
+def uses_openai_responses(config) -> bool:
+    return protocol_of(config) == 'openai_responses'
 
 
 def normalize_anthropic_endpoint(base_url: str) -> str:
     """Accept both https://4router.net and the older /v1 OpenAI base URL."""
     base = str(base_url or '').strip().rstrip('/')
+    if base.endswith('/v1/responses'):
+        base = base[:-len('/responses')]
     if base.endswith('/v1/messages'):
         return base
     if base.endswith('/chat/completions'):
@@ -282,6 +310,123 @@ def _anthropic_chat_message(data: dict) -> dict:
         result['_anthropic_thinking_blocks'] = thinking_blocks
     return result
 
+def _to_responses_payload(payload: dict) -> dict:
+    """Chat-like internal payload -> OpenAI Responses wire schema."""
+    items = []
+    for msg in payload.get('messages', []):
+        role = msg.get('role')
+        if role == 'tool':
+            items.append({'type': 'function_call_output',
+                          'call_id': str(msg.get('tool_call_id', '')),
+                          'output': str(msg.get('content', ''))})
+            continue
+        if role not in ('system', 'developer', 'user', 'assistant'):
+            raise ProviderError(f'Responses 不支持角色：{role}')
+        content = msg.get('content', '')
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if part.get('type') == 'text':
+                    parts.append({'type': 'input_text' if role != 'assistant' else 'output_text',
+                                  'text': str(part.get('text', ''))})
+                elif part.get('type') == 'image_url' and role == 'user':
+                    img = part.get('image_url', {})
+                    parts.append({'type': 'input_image',
+                                  'image_url': img.get('url', '') if isinstance(img, dict) else img})
+                else:
+                    raise ProviderError('Responses 不支持当前图像或消息格式')
+            content = parts
+        if content:
+            items.append({'role': role, 'content': content})
+        if role == 'assistant':
+            for call in msg.get('tool_calls') or []:
+                fn = call.get('function', {})
+                items.append({'type': 'function_call', 'call_id': str(call.get('id', '')),
+                              'name': str(fn.get('name', '')),
+                              'arguments': str(fn.get('arguments', '{}'))})
+    result = {'model': payload['model'], 'input': items,
+              'max_output_tokens': max(1, int(payload.get('max_tokens', 1024))),
+              'stream': bool(payload.get('stream', False))}
+    if isinstance(payload.get('reasoning'), dict):
+        result['reasoning'] = dict(payload['reasoning'])
+    if payload.get('tools'):
+        result['tools'] = [
+            {'type': 'function', 'name': tool['function']['name'],
+             'description': tool['function'].get('description', ''),
+             'parameters': tool['function']['parameters'], 'strict': False}
+            for tool in payload['tools'] if tool.get('type') == 'function'
+        ]
+    if payload.get('tool_choice') in ('auto', 'required', 'none'):
+        result['tool_choice'] = payload['tool_choice']
+    return result
+
+
+def _responses_chat_message(data: dict) -> dict:
+    """Responses output -> internal Chat Completions shaped assistant message."""
+    if not isinstance(data, dict) or not isinstance(data.get('output'), list):
+        raise ProviderError('Provider 返回格式不符合 Responses API')
+    if data.get('status') == 'failed':
+        raise ProviderError(str(data.get('error') or 'Responses 请求失败'))
+    texts = []
+    calls = []
+    for item in data['output']:
+        if not isinstance(item, dict):
+            continue
+        if item.get('type') == 'message':
+            for part in item.get('content') or []:
+                if isinstance(part, dict) and part.get('type') in ('output_text','text'):
+                    texts.append(str(part.get('text', '')))
+        elif item.get('type') == 'function_call':
+            calls.append({'id': str(item.get('call_id', item.get('id', ''))),
+                          'type': 'function', 'function': {
+                              'name': str(item.get('name', '')),
+                              'arguments': str(item.get('arguments', '{}'))}})
+    result = {'content': ''.join(texts) or str(data.get('output_text') or '')}
+    if calls: result['tool_calls'] = calls
+    return result
+
+
+class ResponsesSSEParser:
+    """Only surface user-readable deltas; preserve fragmented SSE packets."""
+    def __init__(self):
+        self._buffer = b''
+        self.done = False
+        self.finish_reason = None
+    def feed_events(self, chunk: bytes):
+        self._buffer += chunk
+        if len(self._buffer) > 1024 * 1024:
+            raise ProviderError('Responses SSE 缓冲超过 1 MB')
+        events = []
+        while True:
+            normalized = self._buffer.replace(b'\r\n', b'\n')
+            pos = normalized.find(b'\n\n')
+            if pos < 0: break
+            packet = normalized[:pos]
+            self._buffer = normalized[pos+2:]
+            data = b'\n'.join(line[5:].strip() for line in packet.split(b'\n')
+                              if line.startswith(b'data:'))
+            if not data: continue
+            if data == b'[DONE]':
+                self.done = True
+                continue
+            try: event = json.loads(data)
+            except ValueError as exc: raise ProviderError('Responses SSE 格式错误') from exc
+            kind = event.get('type', '')
+            if kind == 'response.output_text.delta':
+                events.append({'content': str(event.get('delta', '')),
+                               'reasoning': '', 'finish_reason': None})
+            elif kind == 'response.reasoning_summary_text.delta':
+                events.append({'content': '', 'reasoning': str(event.get('delta', '')),
+                               'finish_reason': None})
+            elif kind == 'response.completed':
+                self.done = True
+                self.finish_reason = 'stop'
+            elif kind in ('response.failed', 'response.incomplete'):
+                raise ProviderError(str(event.get('response', {}).get('error') or
+                                        event.get('response', {}).get('incomplete_details') or kind))
+        return events
+
+
 class SSEParser:
     def __init__(self): self._buffer=b''; self.done=False; self.finish_reason=None
     def feed_events(self,chunk:bytes):
@@ -437,17 +582,18 @@ def thinking_payload(config, *, force_disable=False) -> dict[str, Any]:
             # 非主动输入模式：短后台调用维持上一补丁的低延迟策略。
             return {'output_config': {'effort': 'low'}}
         return {}
-    # Preserve existing OpenAI-compatible / DeepSeek behavior.
+    is_deepseek = 'deepseek.com' in str(getattr(config, 'base_url', '')).lower()
     if force_disable:
-        return {'thinking': {'type': 'disabled'}} if _sends_thinking_param(config) else {}
+        return {'thinking': {'type': 'disabled'}} if is_deepseek else {}
     if mode == 'enabled':
-        # 兼容此前 DeepSeek/OpenAI 格式；强度按用户原始值发送。
         effort = str(getattr(config, 'reasoning_effort', 'high') or '').strip()
-        result = {'thinking': {'type': 'enabled'}}
-        if effort:
-            result['reasoning_effort'] = effort
+        if uses_openai_responses(config):
+            return {'reasoning': {'effort': effort}} if effort else {}
+        result = {'reasoning_effort': effort} if effort else {}
+        if is_deepseek:
+            result['thinking'] = {'type': 'enabled'}
         return result
-    if mode == 'disabled':
+    if mode == 'disabled' and is_deepseek:
         return {'thinking': {'type': 'disabled'}}
     return {}
 
@@ -512,6 +658,24 @@ class OpenAICompatibleProvider:
             raise ProviderError(f'网络连接失败：{reason}{hint}') from exc
         except OSError as exc: raise ProviderError(f'网络请求失败：{exc}') from exc
 
+    def _open_responses(self, payload, config, accept):
+        endpoint = normalize_responses_endpoint(config.base_url)
+        headers = build_browser_headers({'Content-Type': 'application/json', 'Accept': accept})
+        if config.api_key: headers['Authorization'] = f'Bearer {config.api_key}'
+        req = urllib.request.Request(
+            endpoint, data=json.dumps(_to_responses_payload(payload), ensure_ascii=False).encode('utf-8'),
+            headers=headers, method='POST')
+        try:
+            return urllib.request.urlopen(req, timeout=config.timeout,
+                                          context=_make_ssl_context(config.verify_ssl))
+        except urllib.error.HTTPError as exc:
+            raise ProviderError(_safe_error_detail(exc.read(2048).decode('utf-8', 'replace')),
+                                exc.code) from exc
+        except urllib.error.URLError as exc:
+            raise ProviderError(f'网络连接失败：{exc.reason}') from exc
+        except OSError as exc:
+            raise ProviderError(f'网络请求失败：{exc}') from exc
+
     def _open_anthropic(self, payload, config, accept):
         endpoint = normalize_anthropic_endpoint(config.base_url)
         headers = _anthropic_headers(config, accept)
@@ -546,11 +710,13 @@ class OpenAICompatibleProvider:
         payload:dict[str,Any]={'model':config.model,'messages':messages,'stream':True,'temperature':config.temperature,'max_tokens':config.max_tokens}
         payload.update(thinking_payload(config))
         native = uses_anthropic_messages(config)
+        responses = uses_openai_responses(config)
         response=(self._open_anthropic(payload,config,'text/event-stream') if native
+                  else self._open_responses(payload,config,'text/event-stream') if responses
                   else self._open(payload,config,'text/event-stream'))
         if response_holder is not None:
             response_holder.append(response)
-        parser=AnthropicSSEParser() if native else SSEParser()
+        parser=AnthropicSSEParser() if native else ResponsesSSEParser() if responses else SSEParser()
         got_content=False; got_reasoning=False
         try:
             while not cancel_event.is_set():
@@ -571,7 +737,9 @@ class OpenAICompatibleProvider:
 
     def _complete_json(self,payload,config,response_holder,max_response_bytes=4*1024*1024):
         native = uses_anthropic_messages(config)
+        responses = uses_openai_responses(config)
         response=(self._open_anthropic(payload,config,'application/json') if native
+                  else self._open_responses(payload,config,'application/json') if responses
                   else self._open(payload,config,'application/json'))
         if response_holder is not None: response_holder.append(response)
         try: raw=response.read(max_response_bytes+1)
@@ -586,6 +754,8 @@ class OpenAICompatibleProvider:
             err=data['error']; raise ProviderError(str(err.get('message','Provider 返回错误') if isinstance(err,dict) else err))
         if native:
             return _anthropic_chat_message(data)
+        if responses:
+            return _responses_chat_message(data)
         try: return data['choices'][0]['message'] or {}
         except (KeyError,IndexError,TypeError) as exc: raise ProviderError('Provider 返回格式不符合 Chat Completions') from exc
 

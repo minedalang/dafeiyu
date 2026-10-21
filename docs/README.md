@@ -6,6 +6,9 @@
 
 ## 从哪里看起？
 
+- [API 请求协议手动选择与旧配置迁移](API-PROTOCOL-SELECTION.md)：Chat Completions / Responses / Claude Messages 三协议；不再自动识别。
+
+
 | 想了解的问题 | 文档 | 主要内容 |
 | --- | --- | --- |
 | 为什么 AI 会自己动？多久请求一次？ | [AI 自主决策](AI-AUTONOMY.md) | 开关、决策流程、动作协议、优先级和 API 开销 |
