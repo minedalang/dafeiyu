@@ -2184,8 +2184,7 @@ class AppShell:
         else:
             service.apply_config()
         if watcher is not None:
-            watcher.set_decision_sink(
-                service.queue_visual_observation if enabled else None)
+            watcher.set_decision_sink(None)  # independent proactive watch retired
 
     def _autonomy_observe(self):
         """GUI 线程采样；未授权识屏时只有非视觉桌宠/鼠标坐标。"""

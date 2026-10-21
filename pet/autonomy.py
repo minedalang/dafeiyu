@@ -40,8 +40,8 @@ def _request_intent(provider, observation: dict, animations: tuple[str, ...],
                     screen_enabled: bool, cancelled, *,
                     recent_dialogue: tuple[dict, ...] = (),
                     visual_frame: bytes | None = None,
-                    persona: str = ""):
-    """Perform one bounded Chat Completions call; never run on Qt's GUI thread."""
+                    persona: str = "", whitelist: tuple[str, ...] = ()):
+    """One autonomous request, with *only* allowlisted foreground visual input."""
     from .chat.providers import OpenAICompatibleProvider, thinking_payload
 
     messages = build_decision_messages(
@@ -56,23 +56,24 @@ def _request_intent(provider, observation: dict, animations: tuple[str, ...],
     p.timeout = min(float(p.timeout), 35.0)
     p.max_tokens = 720
 
-    if visual_frame is not None or screen_enabled:
-        from .vision import capture_screen_bytes, resolve_vision_model
+    if screen_enabled and not cancelled.is_set():
+        from .autonomy_vision import capture_allowed_foreground
+        from .vision import resolve_vision_model
 
-        # A whitelisted foreground-window frame supplied by the proactive
-        # watcher takes priority. Never capture again for the same decision.
-        jpeg = visual_frame if visual_frame is not None else capture_screen_bytes()
+        jpeg, process = capture_allowed_foreground(whitelist, cancelled=cancelled)
         if cancelled.is_set():
             return None
-        p.model = resolve_vision_model(p)
-        if not p.vision_same_as_chat:
-            p.base_url = p.vision_base_url or p.base_url
-            p.api_key = p.vision_api_key or p.api_key
-        messages[-1]["content"] = [
-            {"type": "text", "text": messages[-1]["content"]},
-            {"type": "image_url", "image_url": {
-                "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")}},
-        ]
+        if jpeg:
+            p.model = resolve_vision_model(p)
+            if not p.vision_same_as_chat:
+                p.base_url = p.vision_base_url or p.base_url
+                p.api_key = p.vision_api_key or p.api_key
+            messages[-1]["content"] = [
+                {"type": "text", "text": messages[-1]["content"] +
+                 "\n视觉来源：已授权的前台程序 " + process},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")}},
+            ]
 
     if cancelled.is_set():
         return None
@@ -193,6 +194,7 @@ class AutonomyService(QObject):
         self._cancelled = threading.Event()
         self._enabled = False
         self._screen_enabled = False
+        self._screen_whitelist = ()
         self._history = deque(maxlen=8)
         self._recent_activities = deque(maxlen=8)
         self._pending_user_text = ""
@@ -235,6 +237,8 @@ class AutonomyService(QObject):
         data = self._config.get("chat", {}) or {}
         enabled = data.get("autonomy_enabled") is True
         screen = data.get("autonomy_screen_enabled") is True
+        from .autonomy_vision import normalize_whitelist
+        whitelist = normalize_whitelist(data.get("autonomy_screen_whitelist", []))
         try:
             seconds = int(data.get("autonomy_interval_seconds", 40))
         except (TypeError, ValueError):
@@ -249,9 +253,11 @@ class AutonomyService(QObject):
         (self._speech_interval_min_seconds,
          self._speech_interval_max_seconds) = speech_bounds
         was_enabled = self._enabled
-        changed = (was_enabled != enabled or self._screen_enabled != screen)
+        changed = (was_enabled != enabled or self._screen_enabled != screen
+                   or self._screen_whitelist != whitelist)
         self._enabled = enabled
         self._screen_enabled = screen
+        self._screen_whitelist = whitelist
         if changed:
             self._generation += 1
             self._cancelled.set()
@@ -275,7 +281,7 @@ class AutonomyService(QObject):
                 # Explicitly enabling is consent for the first non-visual call.
                 QTimer.singleShot(2500, self._tick)
         self._monitor.publish(
-            enabled=enabled, vision=screen, interval_seconds=self._interval_seconds,
+            enabled=enabled, vision=bool(screen and whitelist), interval_seconds=self._interval_seconds,
             speech_status="待机" if enabled else "已关闭",
             speech_next_at=(time.time() + max(0, self._speech_next_at - time.monotonic())
                             if enabled else None),
@@ -656,8 +662,8 @@ class AutonomyService(QObject):
         foreground checks and cooldown have passed. Frames expire quickly and
         are never stored on disk or added to textual chat history.
         """
-        if not self._enabled or not isinstance(jpeg, bytes) or not jpeg:
-            return False
+        # The legacy independent watcher must never feed autonomous decisions.
+        return False
         self._pending_visual = (time.monotonic(), jpeg,
                                 str(process)[:100], str(activity)[:100])
         self._monitor.publish(state="观察到窗口变化，等待统一 AI 决策")
@@ -767,13 +773,9 @@ class AutonomyService(QObject):
             persona = str(self._get_persona() or "")[:1600]
         except Exception:
             persona = ""
-        try:
-            # When both vision switches are enabled, the proactive watcher
-            # owns capture and supplies whitelisted frames. No full-screen
-            # snapshot or independent visual model call in that mode.
-            take_own_screen = self._screen_enabled and not bool(self._prefer_external_vision())
-        except Exception:
-            take_own_screen = self._screen_enabled
+        # The independent watcher is retired. This path is the *only*
+        # autonomous image producer, and empty whitelist means text-only.
+        take_own_screen = self._screen_enabled and bool(self._screen_whitelist)
         self._busy = True
         self._current_request_user = bool(user_message)
         self._current_request_replan = replan
@@ -799,7 +801,7 @@ class AutonomyService(QObject):
             args=(request_id, generation, cancel, provider, world,
                   tuple(animations), tuple(self._history),
                   tuple(self._recent_activities), take_own_screen,
-                  dialogue, visual_frame, persona),
+                  dialogue, visual_frame, persona, self._screen_whitelist),
             name="pet-autonomy-llm", daemon=True)
         try:
             thread.start()
@@ -812,14 +814,15 @@ class AutonomyService(QObject):
 
     def _run_worker(self, request_id, generation, cancel, provider, world,
                     animations, recent, recent_activities, vision,
-                    dialogue=(), visual_frame=None, persona=""):
+                    dialogue=(), visual_frame=None, persona="", whitelist=()):
         intent = None
         error_kind = ""
         try:
             intent = _request_intent(provider, world, animations, recent,
                                      recent_activities, vision, cancel,
                                      recent_dialogue=dialogue,
-                                     visual_frame=visual_frame, persona=persona)
+                                     visual_frame=None, persona=persona,
+                                     whitelist=whitelist)
         except Exception as exc:  # noqa: BLE001 - network/proxy/provider boundary
             # Never log raw HTTP errors, request URLs, screenshots or API Keys.
             error_kind = type(exc).__name__

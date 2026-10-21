@@ -324,11 +324,9 @@ class ProactiveScreenWatcher:
         # 隐藏由 _pause_activity → pause() 负责停止。
         # 无 Chat 变体（排除 pet.chat）的菜单/设置入口已隐藏，用户无法开启；
         # 即使手改 config 开启，真实请求会在 provider 解析阶段失败并计入熔断，不会崩溃。
-        should_run = (
-            sys.platform == "win32"
-            and eff["enabled"]
-            and bool(eff["whitelist"])
-        )
+        # 旧独立主动识屏已停用：保留类与历史配置读取以兼容其它模块，
+        # 但绝不重启轮询器（AI 自主识屏使用独立白名单与入口）。
+        should_run = False
         if should_run:
             if not self._timer.isActive():
                 self._timer.start()
@@ -499,7 +497,9 @@ class ProactiveScreenWatcher:
     def _on_frame_ready(
         self, img: Any, app_str: str, hwnd: int, cur_hash: int, info: dict | None = None
     ) -> None:
-        """主线程槽：接收后台截图计算结果，执行 dHash 差异与频控，进入真实请求或日志模式。"""
+        """旧识屏已退役。丢弃可能残留的队列信号，绝不发送请求。"""
+        self._worker_busy = False
+        return
         try:
             info = info or {}
             eff = effective_proactive_config(self.cfg.get("proactive_screen", {}))

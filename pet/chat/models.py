@@ -108,10 +108,13 @@ class ProviderConfig:
         if not include_secret: d.pop('api_key',None); d.pop('vision_api_key',None)
         return d
 
+from ..autonomy_vision import normalize_whitelist as _normalize_autonomy_whitelist
+
 @dataclass
 class ChatSettings:
     enabled: bool=True; active_provider: str='openai-main'; default_system_prompt: str='你是一只可爱的桌面宠物，请用自然、友善的中文和用户交流。'; history_message_limit: int=40; history_char_limit: int=24000; providers: dict[str,ProviderConfig]=field(default_factory=dict); web_search: WebSearchSettings=field(default_factory=WebSearchSettings)
     autonomy_enabled: bool=False; autonomy_screen_enabled: bool=False; autonomy_interval_seconds: int=40
+    autonomy_screen_whitelist: list[str]=field(default_factory=list)
     def __post_init__(self): self.attach_runtime()
     def attach_runtime(self):
         """把全局联网设置挂到每个 provider 上，调用点拿 active_config 即可带上。"""
@@ -127,11 +130,13 @@ class ChatSettings:
         return cls(bool(raw.get('enabled',True)),active,str(raw.get('default_system_prompt',d.default_system_prompt)),_safe_int(raw.get('history_message_limit',40),40,lo=1),_safe_int(raw.get('history_char_limit',24000),24000,lo=100),providers,WebSearchSettings.from_dict(raw.get('web_search')),
                    raw.get('autonomy_enabled') is True,
                    raw.get('autonomy_screen_enabled') is True,
-                   _safe_int(raw.get('autonomy_interval_seconds',40),40,lo=20,hi=300))
+                   _safe_int(raw.get('autonomy_interval_seconds',40),40,lo=20,hi=300),
+                   list(_normalize_autonomy_whitelist(raw.get('autonomy_screen_whitelist', []))))
     def to_dict(self,include_secrets=True):
         return {'enabled':self.enabled,'active_provider':self.active_provider,'default_system_prompt':self.default_system_prompt,'history_message_limit':self.history_message_limit,'history_char_limit':self.history_char_limit,'providers':{k:v.to_dict(include_secrets) for k,v in self.providers.items()},'web_search':self.web_search.to_dict(include_secrets),
                 'autonomy_enabled':self.autonomy_enabled,'autonomy_screen_enabled':self.autonomy_screen_enabled,
-                'autonomy_interval_seconds':_safe_int(self.autonomy_interval_seconds,40,lo=20,hi=300)}
+                'autonomy_interval_seconds':_safe_int(self.autonomy_interval_seconds,40,lo=20,hi=300),
+                'autonomy_screen_whitelist':list(_normalize_autonomy_whitelist(self.autonomy_screen_whitelist))}
     @property
     def active_config(self):
         p=self.providers[self.active_provider]; p.web_search=self.web_search; return p

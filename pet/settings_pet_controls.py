@@ -792,9 +792,10 @@ def build_pet_controls(host) -> None:
         str(image_dir.resolve()), directory=True, image_preview=True, parent=host,
     )
 
-# ------------------------------------------------------------ 主动识屏
-    if sys.platform == "win32" and host.include_ai:
-        host._build_proactive_controls()
+    # 旧版「主动识屏」已停用：不再创建旧设置控件。
+    # 此处若调用 _build_proactive_controls()，按钮/文本框将以 host 为父窗口创建，
+    # 但对应设置页已经删除，未进入任何布局的控件会显示在设置窗口左上角。
+    # 新的 AI 自主识屏白名单由 chat/ai_settings_page.py 独立构造。
 
 
 # ------------------------------------------------------------ 灵动岛联动控制器

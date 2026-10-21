@@ -57,8 +57,8 @@ class WindowFeatureGateMixin:
 
     # ------------------------------------------------------------ 判定
     def _proactive_wanted(self) -> bool:
-        raw = self.cfg.get("proactive_screen", {})
-        return bool((raw or {}).get("enabled", False))
+        # 独立主动识屏已退役；不要仅因旧 config 仍保存 enabled=True 就实例化 watcher。
+        return False
 
     def _agent_link_wanted(self) -> bool:
         raw = self.cfg.get("agent_link", {})

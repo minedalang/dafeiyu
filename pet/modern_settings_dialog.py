@@ -928,8 +928,8 @@ class ModernSettingsDialog(QDialog):
         menu_page_layout.setContentsMargins(0, 0, 0, 0)
         menu_page_layout.setSpacing(18)
         menu_available_actions = set(MENU_ACTIONS.ids)
-        if sys.platform != "win32":
-            menu_available_actions.discard("proactive_screen")
+        # 原版独立主动识屏已下线，旧自定义菜单也不可重新添加。
+        menu_available_actions.discard("proactive_screen")
         if not self.include_ai:
             menu_available_actions.difference_update({"chat", "look_screen", "balance", "proactive_screen"})
         self.menu_available_actions = frozenset(menu_available_actions)
@@ -982,8 +982,7 @@ class ModernSettingsDialog(QDialog):
         launcher_layout.addStretch(1)
         self._add_page("快捷启动", "application", self._page_shell("快捷启动", launcher_content))
 
-        if sys.platform == "win32" and self.include_ai:
-            self._add_page("主动识屏", "screen", self._page_shell("主动识屏", self._proactive_page_content()))
+        # 原版独立主动识屏已退役；入口合并到「AI 自主行为」白名单。
 
         # AI rows are composed directly into the final capability domain by
         # _rebuild_domain_navigation. Do not temporarily hand the controller
@@ -1990,6 +1989,7 @@ class ModernSettingsDialog(QDialog):
                         claim(
                             "autonomy_enabled",
                             "autonomy_screen_enabled",
+                            "autonomy_screen_whitelist",
                             "autonomy_interval_seconds",
                             "autonomy_speech_min_minutes",
                             "autonomy_speech_max_minutes",
@@ -2045,13 +2045,7 @@ class ModernSettingsDialog(QDialog):
             self.ai_page.hide()
 
         # 「主动识屏」「语音报时」「节日提醒」的旧页分区在域装配时被压平成单张卡片，这里按行键重组（行键以代码实际为准，顺序同旧页）。
-        proactive_sections = [
-            ("主动识屏 · 开关与节奏", claim("proactive_enabled", "proactive_preset")),
-            ("主动识屏 · 什么时候看", claim("proactive_require_idle", "proactive_idle_seconds", "proactive_through", "proactive_pre_cue")),
-            ("主动识屏 · 看哪些软件", claim("proactive_whitelist", "proactive_whitelist_add", "proactive_memory_clear")),
-            ("主动识屏 · 细调（高级）", claim("proactive_dry_run", "proactive_dwell", "proactive_cooldown",
-                                       "proactive_min_interval", "proactive_daily_cap", "proactive_free"), True),
-        ]
+        proactive_sections = []  # 旧「主动识屏」设置已移除。
         voice_chime_rows = list(self.voice_chime_page.findChildren(SettingRow))
         claimed.update(voice_chime_rows)
         # 节日提醒的行**也要在这里登记**：本页的行从构造起就挂在自己的持有容器里

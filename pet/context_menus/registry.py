@@ -420,6 +420,8 @@ class MenuActionRegistry:
             ),
             "quit": MenuActionSpec(add_quit),
         }
+        # 旧独立主动识屏退役；旧用户菜单即使仍引用该 ID 也不能再启动。
+        self._specs.pop("proactive_screen", None)
 
     @property
     def ids(self) -> frozenset[str]:

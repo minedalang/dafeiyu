@@ -418,6 +418,7 @@ def _default_chat_data():
         # Screen pixels are a separate opt-in; neither feature runs by default.
         "autonomy_enabled": False,
         "autonomy_screen_enabled": False,
+        "autonomy_screen_whitelist": [],
         "autonomy_interval_seconds": 40,
         "active_provider": "openai-main",
         "default_system_prompt": "\u4f60\u662f\u4e00\u53ea\u53ef\u7231\u7684\u684c\u9762\u5ba0\u7269\uff0c\u8bf7\u7528\u81ea\u7136\u3001\u53cb\u5584\u7684\u4e2d\u6587\u548c\u7528\u6237\u4ea4\u6d41\u3002",

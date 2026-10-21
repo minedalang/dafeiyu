@@ -133,7 +133,7 @@ ROW_ALIASES: dict[str, tuple[str, ...]] = {
     #    **但「主动识屏」页只在 Windows 建**（`modern_settings_dialog.py` 的
     #    `sys.platform == "win32" and include_ai` 闸门），macOS/Linux 上那一行根本不存在、
     #    查询会 0 命中。所以并列补上该域第一组「待办提醒」作跨平台落点。
-    "自动化与联动": ("proactive_enabled", "todo_reminder_enabled"),
+    "自动化与联动": ("todo_reminder_enabled",),
     #    文件识别 = 「拖文件后询问解读」（该域只有 2 行，它就是整个域的功能本体，
     #    「进度汇报间隔」是它的从属参数）。
     "文件识别": ("file_interpret_enabled",),

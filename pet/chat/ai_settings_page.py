@@ -128,6 +128,10 @@ class _AiSettingsPage(QWidget):
         self.autonomy_enabled.setChecked(bool(self.settings.autonomy_enabled))
         self.autonomy_screen = ToggleSwitch()
         self.autonomy_screen.setChecked(bool(self.settings.autonomy_screen_enabled))
+        self.autonomy_whitelist = QPlainTextEdit(self)
+        self.autonomy_whitelist.setPlaceholderText("每行一个可识屏的程序名，如 code.exe、chrome.exe；不支持通配符。空白名单不截屏。")
+        self.autonomy_whitelist.setPlainText("\n".join(self.settings.autonomy_screen_whitelist))
+        self.autonomy_whitelist.setFixedHeight(90)
         self.autonomy_interval = BrowserSpinBox()
         self.autonomy_interval.setRange(20, 300)
         self.autonomy_interval.setSuffix(" 秒")
@@ -311,12 +315,14 @@ class _AiSettingsPage(QWidget):
                 self.autonomy_enabled, parent=self),
             SettingRow(
                 "autonomy_screen_enabled", "允许自主识屏",
-                "授权自主 AI 理解屏幕。若原版「主动识屏」也已开启，优先共用其通过白名单、"
-                "冷却检查的前台窗口截图，同一观察只发一次决策请求；不再重复全屏截图。"
-                "仅当原版识屏未运行时，才按此开关决定是否截取整个桌面。"
-                "即使关闭本开关，已授权的原版主动识屏仍能把前台窗口观察交给自主 AI。"
-                "图片只在内存中传递，不写入聊天历史。",
+                "仅在开关开启且前台程序命中下方白名单时截取该窗口区域，绝不退化成全桌面截图；"
+                "白名单为空、未命中或窗口识别失败则只发送文字状态；图像不落盘。",
                 self.autonomy_screen, parent=self),
+            SettingRow(
+                "autonomy_screen_whitelist", "自主识屏程序白名单",
+                "每行一个 Windows 进程文件名（如 code.exe），只在该程序窗口处于前台时截取其窗口区域。"
+                "默认空白：即使打开识屏开关也不会发送任何截图；不会读取旧版主动识屏白名单。",
+                self.autonomy_whitelist, stacked=True, parent=self),
             SettingRow(
                 "autonomy_interval_seconds", "AI 决策间隔",
                 "每 20–300 秒最多发起一次决策（单飞、不积压）；建议从 40 秒开始，"
@@ -399,6 +405,8 @@ class _AiSettingsPage(QWidget):
             lambda _: self._autonomy_edited.add("autonomy_enabled"))
         self.autonomy_screen.toggled.connect(
             lambda _: self._autonomy_edited.add("autonomy_screen_enabled"))
+        self.autonomy_whitelist.textChanged.connect(
+            lambda: self._autonomy_edited.add("autonomy_screen_whitelist"))
         self.autonomy_interval.valueChanged.connect(
             lambda _: self._autonomy_edited.add("autonomy_interval_seconds"))
         self.autonomy_speech_min.valueChanged.connect(self._speech_min_changed)
@@ -1017,6 +1025,10 @@ class _AiSettingsPage(QWidget):
             self.settings.autonomy_enabled = self.autonomy_enabled.isChecked()
         if "autonomy_screen_enabled" in self._autonomy_edited:
             self.settings.autonomy_screen_enabled = self.autonomy_screen.isChecked()
+        if "autonomy_screen_whitelist" in self._autonomy_edited:
+            from ..autonomy_vision import normalize_whitelist
+            raw = [line.strip() for line in self.autonomy_whitelist.toPlainText().splitlines() if line.strip()]
+            self.settings.autonomy_screen_whitelist = list(normalize_whitelist(raw))
         if "autonomy_interval_seconds" in self._autonomy_edited:
             self.settings.autonomy_interval_seconds = int(self.autonomy_interval.value())
         self._apply_web_search_settings()
