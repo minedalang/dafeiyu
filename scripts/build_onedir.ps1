@@ -237,6 +237,64 @@ $chatData = if ($noChat) { @() } else {
         '--add-data', 'pet\chat\modern_styles.qss;pet\chat'
     )
 }
+# _ctypes / libffi on Conda (Windows):
+# Some Conda Python builds link _ctypes.pyd to ffi-8.dll or libffi-8.dll from
+# <sys.prefix>\Library\bin. Below, Qt isolation removes that directory from PATH
+# before running PyInstaller. Qt isolation must stay in place; explicitly add
+# ONLY the DLL(s) named by _ctypes.pyd's PE import table instead of restoring
+# the whole Conda DLL directory (which would reintroduce incompatible Qt/ICU).
+# pefile is a normal PyInstaller Windows build dependency.
+$pythonPrefixForCtypes = (& python -c "import sys; print(sys.prefix)").Trim()
+$ctypesImportsPython = @'
+import importlib.util
+import pefile
+import re
+import sys
+
+spec = importlib.util.find_spec('_ctypes')
+if spec is None or not spec.origin:
+    raise RuntimeError('_ctypes extension not found in build Python')
+pe = pefile.PE(spec.origin, fast_load=True)
+try:
+    names = set()
+    directories = [pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_IMPORT']]
+    delay = pefile.DIRECTORY_ENTRY.get('IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT')
+    if delay is not None:
+        directories.append(delay)
+    pe.parse_data_directories(directories=directories)
+    for table in ('DIRECTORY_ENTRY_IMPORT', 'DIRECTORY_ENTRY_DELAY_IMPORT'):
+        for item in (getattr(pe, table, None) or ()):
+            name = item.dll.decode('ascii', 'replace')
+            if re.fullmatch(r'(?:libffi|ffi)[-_0-9]*\.dll', name, re.I):
+                names.add(name)
+    for name in sorted(names):
+        print(name)
+finally:
+    pe.close()
+'@
+$ctypesDllNames = @(& python -c $ctypesImportsPython)
+if ($LASTEXITCODE -ne 0) { throw '[ctypes] cannot inspect _ctypes.pyd PE imports (pefile required)' }
+$ctypesExtraBinaries = @()
+$ctypesDllSources = @{}
+foreach ($dllName in $ctypesDllNames) {
+    $sourceCandidates = @(
+        (Join-Path $pythonPrefixForCtypes "Library\bin\$dllName"),
+        (Join-Path $pythonPrefixForCtypes "DLLs\$dllName"),
+        (Join-Path $pythonPrefixForCtypes $dllName)
+    )
+    $dllSource = $sourceCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        Select-Object -First 1
+    if (-not $dllSource) {
+        throw "[ctypes] $dllName is imported by _ctypes.pyd but is missing from $pythonPrefixForCtypes. Check the Conda libffi package."
+    }
+    $ctypesDllSources[$dllName] = $dllSource
+    $ctypesExtraBinaries += @('--add-binary', "$dllSource;.")
+    Write-Host "[ctypes] bundling $dllName from $dllSource" -ForegroundColor Cyan
+}
+if ($ctypesDllNames.Count -eq 0) {
+    Write-Host '[ctypes] _ctypes.pyd has no external libffi import (nothing to add)' -ForegroundColor DarkGray
+}
+
 # GIF variants: generate GIF assets from webm first (auto when missing, -Gif forces regen)
 if ($isGif -and -not $Gif -and -not (Test-Path 'assets\characters_gif')) {
     $Gif = $true
@@ -390,6 +448,7 @@ if (-not $SkipBuild) {
         --add-data "resources\presentmon;resources\presentmon" `
         @rapidocrData `
         @rapidocrHidden `
+        @ctypesExtraBinaries `
         @excludes `
         $entry
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed: $LASTEXITCODE" }
@@ -547,6 +606,22 @@ if ($badIcu -or $badQt) {
     throw "Bundle contains incompatible Qt/ICU DLLs ($($names -join ', ')). " +
         "This causes 'DLL load failed ... 找不到指定的程序'. Build with a PATH " +
         "that excludes conda Library\bin and MiKTeX miktex\bin."
+}
+
+# Conda libffi must be present beside bundled _ctypes.pyd. Verify/copy before
+# bundle slimming and smoke tests. The extra copy also supports -SkipBuild on an
+# existing broken onedir bundle. Never copy the whole Conda Library/bin folder.
+$bundleInternal = Join-Path $appDir '_internal'
+foreach ($dllName in $ctypesDllNames) {
+    $dllDest = Join-Path $bundleInternal $dllName
+    if (-not (Test-Path -LiteralPath $dllDest -PathType Leaf)) {
+        Copy-Item -LiteralPath $ctypesDllSources[$dllName] -Destination $dllDest -Force
+        Write-Host "[ctypes] repaired missing bundle dependency: $dllName" -ForegroundColor Yellow
+    }
+    if (-not (Test-Path -LiteralPath $dllDest -PathType Leaf)) {
+        throw "[ctypes] bundle is missing required runtime DLL: $dllName"
+    }
+    Write-Host "[ctypes] verified _internal/$dllName" -ForegroundColor Green
 }
 
 # ---------- onedir 瘦身（scripts\slim_bundle.py，2026-09） ----------
