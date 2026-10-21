@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "休息-捧杯喝热茶.webm",
+ "frames": 96,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "391aa3fc4c84331cde11d83d4d3108482a41e70b94caf442939879f611f9d11a"
+}

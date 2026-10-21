@@ -94,11 +94,11 @@ class _AiSettingsPage(QWidget):
         self.thinking_mode.addItem("开启深度思考", "enabled")
         self.thinking_mode.addItem("关闭深度思考", "disabled")
         self.thinking_mode.setCurrentData(provider.thinking)
-        self.reasoning_effort = ModernSelect(self, width=230)
-        self.reasoning_effort.addItem("低（更快）", "low")
-        self.reasoning_effort.addItem("高（默认）", "high")
-        self.reasoning_effort.addItem("最大（最慢、最深入）", "max")
-        self.reasoning_effort.setCurrentData(provider.reasoning_effort)
+        # 原始 API effort 参数：由用户直接填写，不限制成 low/high/max。
+        # 不在 UI 中翻译等级，否则 medium/xhigh 会被错误地重置成 high。
+        self.reasoning_effort = _line_edit(str(provider.reasoning_effort or ""))
+        self.reasoning_effort.setMaxLength(64)
+        self.reasoning_effort.setPlaceholderText("例如 low / medium / high / xhigh / max")
         # 联网搜索（全局，所有 provider 共用）
         self._web_keyed_engines = WEB_SEARCH_KEYED_ENGINES
         web = self.settings.web_search
@@ -270,11 +270,16 @@ class _AiSettingsPage(QWidget):
         thinking_web_rows = [
             SettingRow(
                 "thinking_mode", "深度思考",
-                "DeepSeek V4 等思考模型会先推理再回答，思考过程显示在回复上方（可折叠）。"
-                "「跟随模型默认」不额外发送参数；开启后建议把「最大输出 Token」调到 8192 以上。",
+                "适配模型的思考设置：DeepSeek 使用 thinking 参数；Claude 原生接口使用 output_config.effort。"
+                "「跟随模型默认」不额外发送参数。Claude 选择「关闭」会降至低强度，并非彻底关闭推理；"
+                "不支持该参数的旧 Claude 模型自动使用服务端默认。复杂聊天建议将最大输出 Token 设为 8192 以上。",
                 self.thinking_mode,
             ),
-            SettingRow("reasoning_effort", "思考强度", "仅在「开启深度思考」时发送；强度越高越慢、越耗 Token。", self.reasoning_effort),
+            SettingRow("reasoning_effort", "思考强度（原始参数）",
+                       "开启深度思考后，原样发送此值（不自动翻译或降级）。Claude 原生使用 output_config.effort；"
+                       "OpenAI 兼容 API 沿用 reasoning_effort；是否支持由模型 / 网关决定。"
+                       "例如 low、medium、high、xhigh、max；留空则不发送强度。",
+                       self.reasoning_effort),
             SettingRow(
                 "web_search_enabled", "联网搜索",
                 "回答前先由模型判断是否需要查资料，需要时自动搜索并阅读网页，再结合结果回答；闲聊不会触发搜索。",
@@ -753,7 +758,7 @@ class _AiSettingsPage(QWidget):
             "vision_key": vkey_text if vkey_text else existing.get("vision_key", ""),
             "verify_ssl": not self.skip_ssl.isChecked(),
             "thinking": str(self.thinking_mode.currentData() or "auto"),
-            "reasoning_effort": str(self.reasoning_effort.currentData() or "high"),
+            "reasoning_effort": str(self.reasoning_effort.text().strip()),
         }
 
     def _load_provider_ui(self, provider_id: str) -> None:
@@ -775,7 +780,7 @@ class _AiSettingsPage(QWidget):
         self.vision_key.clear()
         self.skip_ssl.setChecked(not bool(draft.get("verify_ssl", p.verify_ssl)))
         self.thinking_mode.setCurrentData(draft.get("thinking", p.thinking))
-        self.reasoning_effort.setCurrentData(draft.get("reasoning_effort", p.reasoning_effort))
+        self.reasoning_effort.setText(str(draft.get("reasoning_effort", p.reasoning_effort) or ""))
         self._update_thinking_web_visibility()
         self._update_provider_buttons()
 
@@ -885,7 +890,7 @@ class _AiSettingsPage(QWidget):
         p.vision_base_url = draft.get("vision_base_url", p.vision_base_url)
         p.verify_ssl = bool(draft.get("verify_ssl", p.verify_ssl))
         p.thinking = str(draft.get("thinking", p.thinking) or "auto")
-        p.reasoning_effort = str(draft.get("reasoning_effort", p.reasoning_effort) or "high")
+        p.reasoning_effort = str(draft.get("reasoning_effort", p.reasoning_effort) or "").strip()
         key = str(draft.get("key") or "")
         if key:
             p.api_key_ref = p.api_key_ref or f"provider/{provider_id}"
@@ -932,7 +937,7 @@ class _AiSettingsPage(QWidget):
             int(self.tokens.value()),
             verify_ssl=not self.skip_ssl.isChecked(),
             thinking=str(self.thinking_mode.currentData() or "auto"),
-            reasoning_effort=str(self.reasoning_effort.currentData() or "high"),
+            reasoning_effort=str(self.reasoning_effort.text().strip()),
         )
 
     def _run_test(self) -> None:

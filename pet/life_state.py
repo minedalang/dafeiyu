@@ -339,8 +339,13 @@ class WhaleLife:
         needs = {key: round(value, 1) for key, value in self.values.items()}
         meals_today = [meal for meal in ("breakfast", "lunch", "dinner")
                        if self.meals.get(meal) == local.date().isoformat()]
-        if needs["sleepiness"] >= 70 or needs["energy"] <= 28:
-            goal = "优先休息或睡觉；夜间被叫醒可能有点抱怨"
+        # 精力与困意属于不同需求：低精力是身体疲劳，不自动等于需要睡觉。
+        # 夜间节律仍由后面的时段规则与模型判断处理。
+        if needs["sleepiness"] >= 70:
+            if needs["energy"] <= 28:
+                goal = "又累又困：先真正睡觉，补充睡眠与体力"
+            else:
+                goal = "睡眠需求很高：优先真正睡觉；即使精力不低也会困"
             suggested = ["nap", "rest"]
         elif needs["hunger"] >= 70:
             meal = "breakfast" if local.hour < 11 else "lunch" if local.hour < 16 else "dinner"
@@ -350,6 +355,9 @@ class WhaleLife:
             else:
                 goal = "有点饿，考虑用餐"
                 suggested = [meal, "rest"]
+        elif needs["energy"] <= 28:
+            goal = "体力疲劳但不一定困：优先放松休息、减少消耗；不应仅因精力低就睡觉"
+            suggested = ["rest", "music"]
         elif needs["mood"] <= 37:
             goal = "心情低落，考虑休息或轻松娱乐"
             suggested = ["rest", "games", "music"]
@@ -367,7 +375,10 @@ class WhaleLife:
         else:
             goal = "精力正常，可以工作、探索或娱乐"
             suggested = ["work", "play", "games"]
-        return {**needs, "goal": goal, "suggested_activities": suggested,
+        fatigue = "exhausted" if needs["energy"] <= 28 else ("tired" if needs["energy"] <= 45 else "ok")
+        sleep_drive = "sleepy" if needs["sleepiness"] >= 70 else ("drowsy" if needs["sleepiness"] >= 45 else "alert")
+        return {**needs, "fatigue_level": fatigue, "sleep_drive_level": sleep_drive,
+                "goal": goal, "suggested_activities": suggested,
                 "recent_events": self.events[-6:],
                 "meals_today": meals_today,
                 "updated_at": self.updated_at}

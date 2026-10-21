@@ -2,7 +2,7 @@
   "clips": {
     "原地小憩沉眠": {
       "start_percent": 43.0,
-      "end_percent": 65.0
+      "end_percent": 64.0
     },
     "吃早餐": {
       "start_percent": 8.0,
@@ -30,7 +30,7 @@
     },
     "摇扇纳凉": {
       "start_percent": 39.0,
-      "end_percent": 67.0
+      "end_percent": 70.0
     },
     "悠闲哼歌": {
       "start_percent": 19.0,
@@ -51,6 +51,22 @@
     "下五子棋": {
       "start_percent": 29.0,
       "end_percent": 57.0
+    },
+    "原地专心玩魔方": {
+      "start_percent": 30.0,
+      "end_percent": 67.0
+    },
+    "三球抛接": {
+      "start_percent": 17.0,
+      "end_percent": 85.0
+    },
+    "放风筝": {
+      "start_percent": 14.0,
+      "end_percent": 85.0
+    },
+    "抽陀螺": {
+      "start_percent": 69.0,
+      "end_percent": 88.0
     }
   }
 }

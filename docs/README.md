@@ -49,3 +49,5 @@
 - **版本差异先核对文件**：用户覆盖旧补丁、更新上游、切换 Chat/非 Chat 包后，实际行为可能不同。若文档与运行版本不一致，优先看当前运行目录里的源码和配置。
 
 相关项目启动说明仍保留在根目录 [`WINDOWS-AI-TEST.md`](../WINDOWS-AI-TEST.md)；根目录 [`AI-UPDATE-INSTRUCTIONS.md`](../AI-UPDATE-INSTRUCTIONS.md) 说明早期补丁操作背景，具体最新机制以上述文档为准。
+
+- [可选的原创蓝鲸 WebM 试验动作](OPTIONAL-NEW-WEBM-ACTIONS.md)：热茶、伸展、番茄钟读书；非原版角色同款素材，手动选装。

@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "互动-送出小爱心.webm",
+ "frames": 96,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "bea0eea9eea9cc42bda00d9849e688bac98792426b58688f5241b3921940f8d1"
+}

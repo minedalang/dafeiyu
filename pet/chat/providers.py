@@ -250,8 +250,9 @@ def _to_anthropic_payload(payload: dict) -> dict:
         native['tool_choice'] = {'type': 'any' if choice == 'required' else choice}
     if payload.get('output_config') and isinstance(payload['output_config'], dict):
         effort = payload['output_config'].get('effort')
-        if effort in ('low', 'medium', 'high', 'xhigh', 'max'):
-            native['output_config'] = {'effort': effort}
+        # 这是用户指定的 API 原始值；不要用内置枚举静默丢弃新等级。
+        if isinstance(effort, str) and effort.strip():
+            native['output_config'] = {'effort': effort.strip()}
     # Current Claude models restrict sampling parameters when thinking is
     # enabled; omitting OpenAI's temperature/reasoning_effort is intentional.
     return native
@@ -396,18 +397,58 @@ def _today_text():
     now=datetime.now(); return f"{now:%Y-%m-%d} 星期{_WEEKDAYS[now.weekday()]} {now:%H:%M}"
 
 def _sends_thinking_param(config) -> bool:
-    """auto 模式下仅对 DeepSeek 官方地址发送 thinking 参数，避免严格校验参数的服务报错。"""
-    return getattr(config,'thinking','auto')!='auto' or 'deepseek.com' in str(config.base_url or '').lower()
+    """Keep the legacy DeepSeek-compatible behavior for OpenAI endpoints."""
+    return getattr(config, 'thinking', 'auto') != 'auto' or 'deepseek.com' in str(config.base_url or '').lower()
 
-def thinking_payload(config, *, force_disable=False) -> dict[str,Any]:
-    """DeepSeek V4 格式：thinking={'type':enabled/disabled}，reasoning_effort=low/high/max。"""
-    mode=getattr(config,'thinking','auto')
+
+def _anthropic_supports_effort(config) -> bool:
+    """Avoid sending output_config.effort to older Claude models that reject it.
+
+    Claude 5.x, and the 4.6 generation support native effort control. Older
+    models safely fall back to their own defaults rather than returning 400.
+    """
+    name = str(getattr(config, 'model', '') or '').lower().split('/')[-1]
+    match = _re.search(r'claude-(?:opus|sonnet|haiku)-(\d+)(?:[-.](\d+))?', name)
+    if not match:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return major >= 5 or (major == 4 and minor >= 6)
+
+
+def thinking_payload(config, *, force_disable=False) -> dict[str, Any]:
+    """Translate the UI's thinking setting to the chosen wire protocol.
+
+    Claude native Messages API uses top-level output_config.effort, NOT
+    DeepSeek's thinking.type plus OpenAI's reasoning_effort. For native Claude
+    there is no model-independent thinking=disabled: low effort remains the
+    background task default. When the user explicitly enables thinking,
+    pass their raw effort string through to Claude; model validation belongs
+    to the server. With auto, no effort option is sent.
+    """
+    mode = getattr(config, 'thinking', 'auto')
+    if uses_anthropic_messages(config):
+        if mode == 'enabled' and not force_disable:
+            # 用户主动填的努力等级优先于本地模型白名单。即使网关引入新等级，
+            # 也原样交给服务端判断合法性（错误直接向用户报告，不静默改成 high）。
+            effort = str(getattr(config, 'reasoning_effort', 'high') or '').strip()
+            return {'output_config': {'effort': effort}} if effort else {}
+        if (force_disable or mode == 'disabled') and _anthropic_supports_effort(config):
+            # 非主动输入模式：短后台调用维持上一补丁的低延迟策略。
+            return {'output_config': {'effort': 'low'}}
+        return {}
+    # Preserve existing OpenAI-compatible / DeepSeek behavior.
     if force_disable:
-        return {'thinking':{'type':'disabled'}} if _sends_thinking_param(config) else {}
-    if mode=='enabled':
-        return {'thinking':{'type':'enabled'},'reasoning_effort':getattr(config,'reasoning_effort','high') or 'high'}
-    if mode=='disabled':
-        return {'thinking':{'type':'disabled'}}
+        return {'thinking': {'type': 'disabled'}} if _sends_thinking_param(config) else {}
+    if mode == 'enabled':
+        # 兼容此前 DeepSeek/OpenAI 格式；强度按用户原始值发送。
+        effort = str(getattr(config, 'reasoning_effort', 'high') or '').strip()
+        result = {'thinking': {'type': 'enabled'}}
+        if effort:
+            result['reasoning_effort'] = effort
+        return result
+    if mode == 'disabled':
+        return {'thinking': {'type': 'disabled'}}
     return {}
 
 _WEB_TOOLS=[

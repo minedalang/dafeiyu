@@ -29,7 +29,7 @@ def _safe_int(v, default, lo=None, hi=None):
     return x
 
 THINKING_MODES=('auto','enabled','disabled')
-REASONING_EFFORTS=('low','high','max')
+REASONING_EFFORTS=('low','medium','high','xhigh','max')  # 常用示例，不限制自定义值
 WEB_SEARCH_ENGINES=('baidu','duckduckgo','bocha','tavily')
 # 需要 API Key 的搜索引擎（其余为免 Key 的网页抓取）
 WEB_SEARCH_KEYED_ENGINES=('bocha','tavily')
@@ -37,6 +37,17 @@ WEB_SEARCH_KEYED_ENGINES=('bocha','tavily')
 def _choice(v, choices, default):
     v=str(v or '').strip().lower()
     return v if v in choices else default
+
+
+def _effort_text(value, default='high') -> str:
+    """保留用户输入的 API 强度字符串；空字符串表示不发送强度。
+
+    不对模型的合法 effort 值做白名单过滤或自动大小写替换，否则
+    xhigh、medium 或第三方网关的新等级会被意外改成 high。
+    """
+    if value is None:
+        return default
+    return str(value).strip()[:64]
 
 @dataclass
 class WebSearchSettings:
@@ -67,7 +78,7 @@ class ProviderConfig:
         c = cls(str(pid), str(raw.get('name', pid)), str(raw.get('base_url', 'https://api.deepseek.com')), str(raw.get('chat_path', '/v1/chat/completions')), str(raw.get('model', 'deepseek-v4-flash')), str(raw.get('api_key_ref', f'provider/{pid}')), str(raw.get('api_key', '')), _safe_float(raw.get('timeout', 60), 60.0, lo=1.), _safe_float(raw.get('temperature', .7), 0.7, lo=0., hi=2.), _safe_int(raw.get('max_tokens', 2048), 2048, lo=1), verify_ssl=bool(raw.get('verify_ssl', True)))
         c.vision_model=str(raw.get('vision_model','')); c.vision_same_as_chat=bool(raw.get('vision_same_as_chat',True))
         c.vision_base_url=str(raw.get('vision_base_url','')); c.vision_api_key_ref=str(raw.get('vision_api_key_ref','')); c.vision_api_key=str(raw.get('vision_api_key',''))
-        c.thinking=_choice(raw.get('thinking','auto'),THINKING_MODES,'auto'); c.reasoning_effort=_choice(raw.get('reasoning_effort','high'),REASONING_EFFORTS,'high')
+        c.thinking=_choice(raw.get('thinking','auto'),THINKING_MODES,'auto'); c.reasoning_effort=_effort_text(raw.get('reasoning_effort','high'))
         return c
     def to_dict(self,include_secret=True):
         d=asdict(self); d.pop('provider_id',None); d.pop('web_search',None)

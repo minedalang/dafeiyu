@@ -83,6 +83,16 @@ def _request_intent(provider, observation: dict, animations: tuple[str, ...],
     # DeepSeek thinking models can exhaust a small action budget on hidden
     # reasoning; the official endpoint accepts an explicit thinking-off flag.
     payload.update(thinking_payload(p, force_disable=True))
+    # The native Claude Messages API requires a top-level `system` field and
+    # returns `content` blocks, not OpenAI `choices`. Use the provider's own
+    # adapter instead of sending OpenAI messages directly to /v1/messages.
+    if getattr(p, "base_url", ""):
+        from .chat.providers import uses_anthropic_messages
+        if uses_anthropic_messages(p):
+            message = OpenAICompatibleProvider()._complete_json(
+                payload, p, None, max_response_bytes=128 * 1024)
+            return parse_activity_plan(
+                message.get("content"), available_animations=animations)
     with OpenAICompatibleProvider()._open(payload, p, "application/json") as response:
         raw = response.read(128 * 1024 + 1)
     if len(raw) > 128 * 1024:
@@ -132,6 +142,14 @@ def _request_speech(provider, observation: dict, *, trigger: str,
         "stream": False, "max_tokens": 180, "temperature": 0.65,
     }
     payload.update(thinking_payload(p, force_disable=True))
+    if getattr(p, "base_url", ""):
+        from .chat.providers import uses_anthropic_messages
+        if uses_anthropic_messages(p):
+            message = OpenAICompatibleProvider()._complete_json(
+                payload, p, None, max_response_bytes=16 * 1024)
+            if cancelled.is_set():
+                return None
+            return parse_speech_response(message.get("content"))
     with OpenAICompatibleProvider()._open(payload, p, "application/json") as response:
         raw = response.read(16 * 1024 + 1)
     if len(raw) > 16 * 1024:

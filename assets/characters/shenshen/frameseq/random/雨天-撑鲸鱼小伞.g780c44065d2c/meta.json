@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "雨天-撑鲸鱼小伞.webm",
+ "frames": 96,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "780c44065d2c65fb277e672bfa54050bdf080b198cfea0e22f1538c9f1ee1ea9"
+}

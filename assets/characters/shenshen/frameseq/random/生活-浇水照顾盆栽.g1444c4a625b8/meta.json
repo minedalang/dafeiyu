@@ -1,0 +1,8 @@
+{
+ "fps": 24.0,
+ "source": "生活-浇水照顾盆栽.webm",
+ "frames": 96,
+ "encoder": "libwebp lossy q70 (bgra straight, unblend-white-v5)",
+ "unblend": "white-v5",
+ "source_sha256": "1444c4a625b8ccc40e0e60cfcaf5ea0d735910269fc701efd3ad16664ec7a805"
+}
