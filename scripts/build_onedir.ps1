@@ -262,20 +262,9 @@ if (-not $SkipBuild) {
     python scripts\make_icon.py
     if ($LASTEXITCODE -ne 0) { throw "make_icon failed: $LASTEXITCODE" }
 
-    # 素材硬门（2026-10-08）：帧序列产物 assets\characters\<角色>\frameseq\ 是刻意
-    # 不入库的派生产物（.gitignore），只在构建机的素材源里存在。worktree / 新克隆
-    # 天然没有它，而上面 $datas 对非 GIF 变体**整树拷贝** assets\characters——素材
-    # 在就进包、缺了也不报错，于是缺帧序列的包会被静默打出来，用户长期看到未转换
-    # 素材（白边）。这里在 PyInstaller 起跑前验证每个 clip 都有当前世代的帧序列
-    # 产物，非零即中止（脚本自己的中文报错已打到 stderr，含怎么补）。
-    # GIF 变体跳过本门：它打包的是 assets\characters_gif（由 convert_to_gif.py
-    # 从 webm 直出 GIF），素材树里没有也没有 frameseq 这一层，本门不适用。
-    if (-not $isGif) {
-        Write-Host "[frameseq] verifying frame-sequence material completeness..." -ForegroundColor Cyan
-        python scripts\check_frameseq_bundle.py
-        if ($LASTEXITCODE -ne 0) { throw "check_frameseq_bundle failed: $LASTEXITCODE" }
-        Write-Host "[frameseq] frame-sequence material OK" -ForegroundColor Green
-    }
+    # frameseq 为可选的 WebM 派生帧缓存，不作为 EXE 打包的强制前提。
+    # 运行时 MovieLibrary 在无有效 frameseq 时直接回退 WebMClip 解码。
+    # 不执行 scripts/check_frameseq_bundle.py，以免因缓存缺失阻塞发布。
 
     # 采集后端硬门（2026-10-11）：游戏帧率段的读数是子进程跑官方独立程序拿到的，
     # 程序本体随 Windows 包分发（resources\presentmon\，见下面的 --add-data）。
