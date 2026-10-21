@@ -21,6 +21,8 @@ _VERSION = 1
 # Offline simulation is limited to the most recent day; a week without the pet
 # running must not credit a week of sleep or create an extreme hunger debt.
 _MAX_OFFLINE_HOURS = 24
+# 只保存最近 24 次关机补算，避免配置文件无限增长；不保存聊天或截图。
+_MAX_OFFLINE_RECORDS = 24
 _NIGHT_START = clock_time(22, 0)
 _NIGHT_END = clock_time(7, 0)
 _DEFAULTS = {"energy": 78.0, "hunger": 27.0,
@@ -58,6 +60,7 @@ class WhaleLife:
         self.values = dict(_DEFAULTS)
         self.events: list[dict] = []
         self.meals: dict[str, str] = {}
+        self.offline_settlements: list[dict] = []
         # The end of an accepted nap, persisted to recover a nap interrupted by
         # shutdown. Night sleep is inferred independently from the local clock.
         self.sleep_until_at: float | None = None
@@ -104,6 +107,15 @@ class WhaleLife:
                                and 0 < item["at"] <= self.updated_at + 60
                                and isinstance(item.get("description"), str)
                                and len(item["description"]) <= 64]
+            raw_audit = data.get("offline_settlements", [])
+            if isinstance(raw_audit, list):
+                self.offline_settlements = [entry for entry in raw_audit[-_MAX_OFFLINE_RECORDS:]
+                                            if isinstance(entry, dict)
+                                            and isinstance(entry.get("started_at"), (float, int))
+                                            and isinstance(entry.get("finished_at"), (float, int))
+                                            and isinstance(entry.get("sleep_minutes"), (float, int))
+                                            and isinstance(entry.get("before"), dict)
+                                            and isinstance(entry.get("after"), dict)]
             raw_meals = data.get("meals", {})
             if isinstance(raw_meals, dict):
                 self.meals = {key: str(value)[:10] for key, value in raw_meals.items()
@@ -121,7 +133,8 @@ class WhaleLife:
         payload = {"version": _VERSION, "updated_at": self.updated_at,
                    "needs": self.values, "events": self.events[-12:],
                    "meals": self.meals,
-                   "sleep_until_at": self.sleep_until_at}
+                   "sleep_until_at": self.sleep_until_at,
+                   "offline_settlements": self.offline_settlements[-_MAX_OFFLINE_RECORDS:]}
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -186,6 +199,8 @@ class WhaleLife:
         start = self.updated_at
         if end <= start:
             return 0.0
+        gap_started_at = start
+        before = {key: round(float(value), 3) for key, value in self.values.items()}
         # Don't simulate several missed days, even when the program was closed
         # for a week. The final day represents the whale's current rhythm.
         start = max(start, end - _MAX_OFFLINE_HOURS * 3600)
@@ -202,6 +217,7 @@ class WhaleLife:
             if wake_time > start and bedtime < end:
                 sleep_intervals.append((max(start, bedtime), min(end, wake_time)))
             day += timedelta(days=1)
+        night_intervals = tuple(sleep_intervals)
         if self.sleep_until_at is not None and self.sleep_until_at > start:
             sleep_intervals.append((start, min(end, self.sleep_until_at)))
         points = {start, end}
@@ -210,6 +226,8 @@ class WhaleLife:
                 points.add(left)
                 points.add(right)
         sleep_minutes = 0.0
+        night_minutes = 0.0
+        daytime_nap_minutes = 0.0
         boundaries = sorted(points)
         for left, right in zip(boundaries, boundaries[1:]):
             if right <= left:
@@ -218,12 +236,31 @@ class WhaleLife:
             self.advance(now=right, activity="nap" if sleeping else None,
                          limit_minutes=_MAX_OFFLINE_HOURS * 60)
             if sleeping:
-                sleep_minutes += (right - left) / 60
+                part = (right - left) / 60
+                sleep_minutes += part
+                # Night hours take precedence if an accepted nap overlaps them.
+                in_night = any(a <= left and right <= b for a, b in night_intervals)
+                if in_night:
+                    night_minutes += part
+                else:
+                    daytime_nap_minutes += part
         self.sleep_until_at = None
         if sleep_minutes >= 1:
             hours, minutes = divmod(int(round(sleep_minutes)), 60)
             summary = f"离线睡眠 {hours} 小时 {minutes} 分钟，已恢复精力和困意"
             self._record(summary, now=end)
+        self.offline_settlements.append({
+            "started_at": gap_started_at,
+            "settled_from_at": start,
+            "finished_at": end,
+            "sleep_minutes": round(sleep_minutes, 2),
+            "night_sleep_minutes": round(night_minutes, 2),
+            "daytime_nap_minutes": round(daytime_nap_minutes, 2),
+            "discarded_minutes": round((start - gap_started_at) / 60, 2),
+            "before": before,
+            "after": {key: round(float(value), 3) for key, value in self.values.items()},
+        })
+        self.offline_settlements = self.offline_settlements[-_MAX_OFFLINE_RECORDS:]
         self.save(force=True)
         return sleep_minutes
 

@@ -3300,8 +3300,9 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
             _disarm = getattr(self, '_disarm_screen_restore_retry', None)
             if callable(_disarm):
                 _disarm()
-            if self.drag:
-                self._switch(self.drag)  # 进入拖拽：播放悬空反馈动画
+            sleep_clip = getattr(self, "_autonomy_loop_clip_name", None)
+            if self.drag and not (sleep_clip and self.anim == sleep_clip):
+                self._switch(self.drag)  # 普通动作拖拽仍切悬空；睡眠维持原视频
             if self.drag_physics:
                 _vp = self._virtual_pos()
                 self._phys_pos = [float(_vp.x()), float(_vp.y())]
@@ -3386,8 +3387,10 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
                 self._interaction_area = None  # 普通拖拽结束：多屏快照释放，回本屏语义
                 self._save_position()
             self._position_sync_now()  # 松手后的最终位置立即同步（气泡/监听器），不等去抖
-            if self.idles and self._physics_mode != 'throw':
-                # 回待机缓冲；弹射起飞时不在此切换——飞行途中由 _on_anim_ended
+            sleep_clip = getattr(self, "_autonomy_loop_clip_name", None)
+            if (self.idles and self._physics_mode != 'throw'
+                    and not (sleep_clip and self.anim == sleep_clip)):
+                # 回待机缓冲；保护中的睡眠不切待机；弹射则归飞行链
                 # 的飞行循环规则接管（当前动作播完后循环悬空动画，落地回待机），
                 # 避免松手帧现场掷骰切到冷首帧动画造成 GUI 同步解码卡顿。
                 self._switch(self._pick(self.idles))

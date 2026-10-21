@@ -414,6 +414,10 @@ class BehaviorController:
         if st is None:
             st = self._states[sprite] = _SpriteState()
             st.predictor = self._make_predictor(sprite)
+        # During an AI-held activity (especially sleep), dragging is only a
+        # position edit: never replace its looped clip with the hanging pose.
+        if st.state == STATE_HELD:
+            return
         self._enter_drag(sprite, st)
 
     def on_drag_released(self, sprite) -> None:
@@ -427,6 +431,9 @@ class BehaviorController:
             return
         st = self._states.get(sprite)
         if st is None:
+            return
+        # A gentle drag does not wake the whale or restart the loop.
+        if st.state == STATE_HELD:
             return
         self._enter_idle(sprite, st, self._categories(sprite.library))
 
@@ -724,6 +731,8 @@ class BehaviorController:
         """
         istate = getattr(sprite, "interaction_state", INTERACTION_NORMAL)
         if istate == INTERACTION_DRAG:
+            if st.state == STATE_HELD:
+                return  # Sleep animation continues while user relocates pet.
             if st.state != STATE_DRAG:
                 self._enter_drag(sprite, st)
         elif istate == INTERACTION_THROWN and st.state != STATE_THROWN:

@@ -1,6 +1,8 @@
+> **历史开发报告（非最新运行机制）**：本文件保留早期提交记录。当前默认值、持续活动、独立搭话、双击和离线睡眠请从 [机制文档索引](README.md) 查阅。
+
 # PR 报告：大肥鱼 AI 自主行为（2026-10-20，工作区修改版）
 
-基线：`MerZlin/dsh-pet-indesktop` 的本次本地克隆（`147170f`）；参考 `NatBrian/mochi-llm-pet` 的「环境摘要 → 模型选择高层动作 → 有界执行器执行」理念。未提交上游 PR，未声明 Windows 已实机验收。用户操作文档见 [`AI-AUTONOMY.md`](AI-AUTONOMY.md)，设置契约见 [`SETTINGS-CHANGE-GATES.md`](SETTINGS-CHANGE-GATES.md)。
+基线：`MerZlin/dsh-pet-indesktop` 的本次本地克隆（`147170f`）；参考 `NatBrian/mochi-llm-pet` 的「环境摘要 → 模型选择高层动作 → 有界执行器执行」理念。未提交上游 PR，未声明 Windows 已实机验收。用户操作文档见 [`AI-AUTONOMY.md`](AI-AUTONOMY.md)，该历史报告曾引用 `SETTINGS-CHANGE-GATES.md`（当前测试源码包未包含该文件）；现行配置可看 [机制速查](MECHANISM-REFERENCE.md)。
 
 ## 修改文件说明
 

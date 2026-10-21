@@ -66,6 +66,86 @@ class WhaleLifeTests(unittest.TestCase):
             self.assertLess(restored.values["sleepiness"], 20)
             self.assertTrue(all(0 <= x <= 100 for x in restored.values.values()))
 
+    def test_night_shutdown_before_bedtime_only_counts_night_as_sleep(self):
+        with tempfile.TemporaryDirectory() as folder:
+            evening = datetime(2026, 10, 20, 19, 0).timestamp()
+            morning = datetime(2026, 10, 21, 8, 0).timestamp()
+            life = WhaleLife(folder, now=evening)
+            life.values.update(energy=12, sleepiness=90)
+            life.save(force=True)
+            restored = WhaleLife(folder, now=morning)
+            self.assertEqual(restored.updated_at, morning)
+            self.assertLess(restored.values["sleepiness"], 10)
+            self.assertGreater(restored.values["energy"], 90)
+            self.assertTrue(any("离线睡眠 9 小时 0 分钟" in e["description"]
+                                for e in restored.events))
+            same_time = WhaleLife(folder, now=morning)
+            self.assertEqual(same_time.values, restored.values)
+            self.assertEqual(same_time.events, restored.events)
+
+    def test_daytime_shutdown_does_not_grant_night_sleep(self):
+        with tempfile.TemporaryDirectory() as folder:
+            start = datetime(2026, 10, 20, 12, 0).timestamp()
+            end = datetime(2026, 10, 20, 16, 0).timestamp()
+            life = WhaleLife(folder, now=start)
+            life.values.update(energy=20, sleepiness=80)
+            life.save(force=True)
+            restored = WhaleLife(folder, now=end)
+            self.assertGreater(restored.values["sleepiness"], 80)
+            self.assertLess(restored.values["energy"], 20)
+            self.assertFalse(any("离线睡眠" in e["description"]
+                                 for e in restored.events))
+
+    def test_nap_at_shutdown_only_counts_remaining_nap_duration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            start = datetime(2026, 10, 20, 14, 0).timestamp()
+            life = WhaleLife(folder, now=start)
+            life.values.update(energy=35, sleepiness=85)
+            life.start_activity("nap", now=start, sleep_until_at=start + 20 * 60)
+            restarted = WhaleLife(folder, now=start + 3 * 3600)
+            self.assertAlmostEqual(restarted.values["sleepiness"],
+                                   85 - 20 * 0.9 + 160 * 0.048, delta=0.2)
+            self.assertIsNone(restarted.sleep_until_at)
+            self.assertTrue(any("离线睡眠 0 小时 20 分钟" in e["description"]
+                                for e in restarted.events))
+
+    def test_nap_closed_normally_is_not_credited_again(self):
+        with tempfile.TemporaryDirectory() as folder:
+            start = datetime(2026, 10, 20, 14, 0).timestamp()
+            life = WhaleLife(folder, now=start)
+            life.start_activity("nap", now=start, sleep_until_at=start + 30 * 60)
+            life.advance(now=start + 4 * 60, activity="nap")
+            life.end_activity("nap")
+            life.save(force=True)
+            restored = WhaleLife(folder, now=start + 3600)
+            self.assertFalse(any("离线睡眠" in e["description"]
+                                 for e in restored.events))
+
+    def test_week_long_shutdown_is_capped_to_most_recent_day(self):
+        with tempfile.TemporaryDirectory() as folder:
+            start = datetime(2026, 10, 14, 20).timestamp()
+            end = datetime(2026, 10, 21, 8).timestamp()
+            life = WhaleLife(folder, now=start)
+            life.values.update(energy=30, sleepiness=75)
+            life.save(force=True)
+            restored = WhaleLife(folder, now=end)
+            self.assertEqual(restored.updated_at, end)
+            night_entries = [e for e in restored.events if "离线睡眠" in e["description"]]
+            self.assertEqual(len(night_entries), 1)
+            self.assertIn("9 小时 0 分钟", night_entries[0]["description"])
+
+    def test_partial_night_in_same_calendar_day_credits_sleep(self):
+        with tempfile.TemporaryDirectory() as folder:
+            start = datetime(2026, 10, 20, 22, 30).timestamp()
+            end = datetime(2026, 10, 20, 23, 30).timestamp()
+            life = WhaleLife(folder, now=start)
+            life.values["sleepiness"] = 80
+            life.save(force=True)
+            restored = WhaleLife(folder, now=end)
+            self.assertLess(restored.values["sleepiness"], 30)
+            self.assertTrue(any("离线睡眠 1 小时 0 分钟" in e["description"]
+                                for e in restored.events))
+
     def test_corrupt_values_and_absurd_events_are_ignored(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "whale-life-state.json"
