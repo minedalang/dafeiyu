@@ -295,6 +295,80 @@ if ($ctypesDllNames.Count -eq 0) {
     Write-Host '[ctypes] _ctypes.pyd has no external libffi import (nothing to add)' -ForegroundColor DarkGray
 }
 
+# Python _ssl/_hashlib linked libraries in Conda often live in Library/bin.
+# Detect their actual PE imports instead of assuming one OpenSSL filename/version.
+# Running the analyzer before the PATH Qt isolation is intentional.
+$sslImportsPython = @'
+import importlib.util
+import os
+import pefile
+import re
+import sys
+
+prefix = sys.prefix
+found = set()
+
+def imports(path):
+    pe = pefile.PE(path, fast_load=True)
+    try:
+        indexes = [pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_IMPORT']]
+        delay = pefile.DIRECTORY_ENTRY.get('IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT')
+        if delay is not None:
+            indexes.append(delay)
+        pe.parse_data_directories(directories=indexes)
+        result = []
+        for entry_type in ('DIRECTORY_ENTRY_IMPORT', 'DIRECTORY_ENTRY_DELAY_IMPORT'):
+            for entry in getattr(pe, entry_type, None) or ():
+                result.append(entry.dll.decode('ascii', 'replace'))
+        return result
+    finally:
+        pe.close()
+
+for module in ('_ssl', '_hashlib'):
+    spec = importlib.util.find_spec(module)
+    if spec is None or not spec.origin or not os.path.isfile(spec.origin):
+        raise RuntimeError('Python extension not found: ' + module)
+    for name in imports(spec.origin):
+        if re.fullmatch(r'(?:libssl|libcrypto)[\w.\-]*\.dll', name, re.I):
+            found.add(name)
+
+# OpenSSL may have other non-system dependencies (especially Conda zlib).
+# Include those only if actually referenced by the selected OpenSSL DLLs.
+for name in tuple(sorted(found)):
+    for folder in (os.path.join(prefix, 'Library', 'bin'),
+                   os.path.join(prefix, 'DLLs'), prefix):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            for dependency in imports(path):
+                if re.fullmatch(r'(?:zlib1?|zstd|libzstd)[\w.\-]*\.dll', dependency, re.I):
+                    found.add(dependency)
+            break
+for name in sorted(found, key=str.lower):
+    print(name)
+'@
+$sslDllNames = @(& python -c $sslImportsPython)
+if ($LASTEXITCODE -ne 0) { throw '[SSL] cannot inspect _ssl/_hashlib PE imports (check pefile/build Python)' }
+$sslExtraBinaries = @()
+$sslDllSources = @{}
+foreach ($dllName in $sslDllNames) {
+    $candidates = @(
+        (Join-Path $pythonPrefixForCtypes "Library\bin\$dllName"),
+        (Join-Path $pythonPrefixForCtypes "DLLs\$dllName"),
+        (Join-Path $pythonPrefixForCtypes $dllName)
+    )
+    $sourceDll = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        Select-Object -First 1
+    if (-not $sourceDll) {
+        throw "[SSL] $dllName is required by the build Python but not found in $pythonPrefixForCtypes"
+    }
+    $sslDllSources[$dllName] = $sourceDll
+    $sslExtraBinaries += @('--add-binary', "$sourceDll;.")
+    Write-Host "[SSL] bundling $dllName from $sourceDll" -ForegroundColor Cyan
+}
+if ($sslDllNames.Count -eq 0) {
+    Write-Host '[SSL] build Python has no external OpenSSL DLL imports' -ForegroundColor DarkGray
+}
+
 # GIF variants: generate GIF assets from webm first (auto when missing, -Gif forces regen)
 if ($isGif -and -not $Gif -and -not (Test-Path 'assets\characters_gif')) {
     $Gif = $true
@@ -449,6 +523,7 @@ if (-not $SkipBuild) {
         @rapidocrData `
         @rapidocrHidden `
         @ctypesExtraBinaries `
+        @sslExtraBinaries `
         @excludes `
         $entry
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed: $LASTEXITCODE" }
@@ -534,17 +609,6 @@ if (Test-Path (Join-Path $condaBin 'Qt6Core.dll')) {
     }
     Write-Host "[Qt] Runtime validation OK" -ForegroundColor Green
 
-    # ---------- Fix Python SSL DLL missing for conda builds ----------
-    # Copy Python SSL dependencies (libcrypto/libssl) from conda Library/bin to bundle _internal root
-    # Required because _ssl.pyd (Python's SSL module) depends on these DLLs, they aren't always collected automatically
-    foreach ($dep in @('libcrypto-3-x64.dll', 'libssl-3-x64.dll')) {
-        $depSrc = Join-Path $condaBin $dep
-        $depDst = Join-Path $appDir "_internal\$dep"
-        if (Test-Path $depSrc) {
-            Copy-Item $depSrc $depDst -Force
-            Write-Host "[SSL] copied $dep to bundle _internal/ (fixes import ssl DLL load error)"
-        }
-    }
 } else {
     Write-Host "[Qt] pip PySide6 (Qt6 DLL bundled), runtime copy skipped" -ForegroundColor Yellow
 }
@@ -637,6 +701,42 @@ if (-not $SkipSlim) {
     python scripts\slim_bundle.py --app-dir $appDir
     if ($LASTEXITCODE -ne 0) { throw "Bundle slimming failed: $LASTEXITCODE" }
     Write-Host "[slim] bundle slimmed" -ForegroundColor Green
+}
+
+# Validate Python native DLLs *after* slimming: old pre-slim checks missed
+# dependencies deleted or overwritten by post-processing. Works for pip Qt too.
+$bundleInternal = Join-Path $appDir '_internal'
+$runtimePythonDll = (& python -c "import sys; print('python%d%d.dll' % sys.version_info[:2])").Trim()
+if ($LASTEXITCODE -ne 0 -or -not $runtimePythonDll) { throw '[Python] failed to identify runtime DLL' }
+if (-not (Test-Path -LiteralPath (Join-Path $bundleInternal $runtimePythonDll) -PathType Leaf)) {
+    throw "[Python] bundle missing _internal/$runtimePythonDll"
+}
+$bundleSslExt = @(Get-ChildItem -LiteralPath $bundleInternal -Filter '_ssl*.pyd' -File -ErrorAction SilentlyContinue)
+if ($bundleSslExt.Count -eq 0) {
+    throw '[SSL] bundle missing _ssl.pyd; check PyInstaller import collection'
+}
+foreach ($dllName in $sslDllNames) {
+    $sourceDll = $sslDllSources[$dllName]
+    $destDll = Join-Path $bundleInternal $dllName
+    # Always overwrite a potentially incompatible DLL collected from PATH.
+    # This keeps _ssl.pyd, _hashlib.pyd and OpenSSL from the *same* Python env.
+    Copy-Item -LiteralPath $sourceDll -Destination $destDll -Force
+    if (-not (Test-Path -LiteralPath $destDll -PathType Leaf)) {
+        throw "[SSL] bundle missing required native dependency: $dllName"
+    }
+    $expectedHash = (Get-FileHash -LiteralPath $sourceDll -Algorithm SHA256).Hash
+    $actualHash = (Get-FileHash -LiteralPath $destDll -Algorithm SHA256).Hash
+    if ($expectedHash -ne $actualHash) {
+        throw "[SSL] bundled dependency differs from selected Python env: $dllName"
+    }
+    Write-Host "[SSL] verified _internal/$dllName" -ForegroundColor Green
+}
+foreach ($dllName in $ctypesDllNames) {
+    $destDll = Join-Path $bundleInternal $dllName
+    if (-not (Test-Path -LiteralPath $destDll -PathType Leaf)) {
+        throw "[ctypes] dependency removed after slimming: $dllName"
+    }
+    Write-Host "[ctypes] post-slim OK: $dllName" -ForegroundColor Green
 }
 
 # 中文编码自检（issue #26）：字节码字面量/文本资源/中文文件名任一项被
