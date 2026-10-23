@@ -1270,7 +1270,7 @@ class Config:
             "network_info_menu_enabled": True,
             "proactive_screen": _default_proactive_screen_data(),
             "agent_link": _default_agent_link_data(),
-            "desktop_agent": {"enabled": False, "gateway_url": "http://127.0.0.1:18789", "agent_model": "openclaw/default", "windows_allowlist": []},
+            "desktop_agent": {"enabled": False, "gateway_url": "http://127.0.0.1:18789", "agent_model": "openclaw/default", "windows_allowlist": [], "context_summary_enabled": True, "context_message_limit": 30},
             "file_interpret": _default_file_interpret_data(),
             "chat_ui_style": "modern",  # modern / classic（仅聊天窗口保留双实现）
             "chat_follow_pet": False,  # 聊天窗口是否跟随桌宠移动

@@ -905,8 +905,18 @@ class ChatComposer(QFrame):
         footer.setSpacing(5)
         self.attach_button = _chat_tool_button(self.toolbar, "composer-attach-button", "attach", "添加附件")
         self.attach_button.clicked.connect(self.choose_attachments)
-        self.mode_button = None
         footer.addWidget(self.attach_button)
+        # Visible, per-message Agent toggle beside the chat input.
+        # Only modifies the prompt prefix; does not turn on Agent permissions.
+        self.mode_button = QToolButton(self.toolbar)
+        self.mode_button.setObjectName("composer-agent-button")
+        self.mode_button.setText("Agent")
+        self.mode_button.setCheckable(True)
+        self.mode_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.mode_button.setMinimumHeight(28)
+        self.mode_button.setToolTip("点亮后给本条消息加 /agent 前缀，交给 OpenClaw；再次点击取消")
+        footer.addWidget(self.mode_button)
+        self.mode_button.toggled.connect(self._toggle_agent_mode)
         self.hint = QLabel("内容会保存到当前角色的本地会话")
         self.hint.setObjectName("composer-hint")
         footer.addWidget(self.hint)
@@ -921,7 +931,33 @@ class ChatComposer(QFrame):
         footer.addWidget(self.send)
         root.addWidget(self.toolbar)
         self.input.textChanged.connect(self._update_enabled)
+        self.input.textChanged.connect(self._sync_agent_mode)
         self._update_enabled()
+
+    def _sync_agent_mode(self) -> None:
+        """Manually typed /agent also updates the toggle; no recursive signals."""
+        from ..desktop_agent import task_from_message
+        enabled = task_from_message(self.input.toPlainText()) is not None
+        if self.mode_button.isChecked() != enabled:
+            previous = self.mode_button.blockSignals(True)
+            try:
+                self.mode_button.setChecked(enabled)
+            finally:
+                self.mode_button.blockSignals(previous)
+
+    def _toggle_agent_mode(self, enabled: bool) -> None:
+        from ..desktop_agent import set_agent_prefix
+        old_text = self.input.toPlainText()
+        new_text = set_agent_prefix(old_text, enabled)
+        if new_text != old_text:
+            # Preserve the typed text and the cursor position as the prefix changes.
+            old_pos = self.input.textCursor().position()
+            offset = len(new_text) - len(old_text)
+            self.input.setPlainText(new_text)
+            cursor = self.input.textCursor()
+            cursor.setPosition(max(0, min(len(new_text), old_pos + offset)))
+            self.input.setTextCursor(cursor)
+        self.input.setFocus()
 
     def choose_attachments(self) -> None:
         paths, _selected = QFileDialog.getOpenFileNames(
@@ -1041,7 +1077,12 @@ class ChatComposer(QFrame):
         return super().eventFilter(obj, event)
 
     def _update_enabled(self) -> None:
-        self.send.setEnabled(self._busy or bool(self.input.toPlainText().strip()) or bool(self.attachment_paths))
+        from ..desktop_agent import task_from_message
+        text = self.input.toPlainText().strip()
+        agent_task = task_from_message(text)
+        # An empty /agent prefix is not a runnable task.
+        ready_text = bool(agent_task) if agent_task is not None else bool(text)
+        self.send.setEnabled(self._busy or ready_text or bool(self.attachment_paths))
 
     def set_busy(self, busy: bool) -> None:
         self._busy = bool(busy)
@@ -1240,7 +1281,7 @@ class ChatWindow(QDialog):
     def _new_session(self):
         session = self.store.create(
             self.character_id,
-            self.settings.conversation_config.provider_id,
+            self.settings.conversation_provider_id,
             self.prompt_builder.effective_system_prompt(self.settings, self.character_id),
         )
         self.store.save(session)
@@ -1439,29 +1480,29 @@ class ChatWindow(QDialog):
         self.model_toolbar = QFrame(chat_main)
         self.model_toolbar.setObjectName('chat-model-toolbar')
         bar = QHBoxLayout(self.model_toolbar)
-        bar.setContentsMargins(18, 6, 18, 6)
-        bar.setSpacing(8)
+        bar.setContentsMargins(12, 6, 12, 6)
+        bar.setSpacing(5)
         bar.addWidget(QLabel('聊天 API', self.model_toolbar))
         self.chat_provider_selector = QComboBox(self.model_toolbar)
         self.chat_provider_selector.setObjectName('chat-provider-selector')
-        self.chat_provider_selector.setMinimumWidth(125)
-        self.chat_provider_selector.setMaximumWidth(210)
-        self.chat_provider_selector.setToolTip('只影响 AI 对话；与桌宠设置中 API 列表当前选中的项目相互独立')
+        self.chat_provider_selector.setMinimumWidth(88)
+        self.chat_provider_selector.setMaximumWidth(175)
+        self.chat_provider_selector.setToolTip('选择聊天专用 API Provider（包括 URL、协议和 Key）；不会影响自主行为和设置页的默认 API。')
         bar.addWidget(self.chat_provider_selector)
-        bar.addWidget(QLabel('模型 ID', self.model_toolbar))
+        bar.addWidget(QLabel('模型', self.model_toolbar))
         self.chat_model_selector = QComboBox(self.model_toolbar)
         self.chat_model_selector.setObjectName('chat-model-selector')
         self.chat_model_selector.setEditable(True)
         self.chat_model_selector.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.chat_model_selector.setMinimumWidth(145)
-        self.chat_model_selector.setToolTip('仅显示当前聊天 API 的默认模型；也可以手动输入此 API 支持的模型 ID')
+        self.chat_model_selector.setMinimumWidth(130)
+        self.chat_model_selector.setToolTip('可选择 API 列表里的模型（自动联动对应 API 协议与 Key）；若手动输入新模型，先选择右侧对应的聊天 API。')
         bar.addWidget(self.chat_model_selector, 1)
         bar.addWidget(QLabel('思考深度', self.model_toolbar))
         self.chat_effort_selector = QComboBox(self.model_toolbar)
         self.chat_effort_selector.setObjectName('chat-effort-selector')
         for title, val in [('默认','inherit'), ('关闭','disabled'), ('Low','low'), ('Medium','medium'), ('High','high'), ('XHigh','xhigh'), ('Max','max')]:
             self.chat_effort_selector.addItem(title, val)
-        self.chat_effort_selector.setMinimumWidth(96)
+        self.chat_effort_selector.setMinimumWidth(82)
         bar.addWidget(self.chat_effort_selector)
         self.web_search_toggle = QToolButton(self.model_toolbar)
         self.web_search_toggle.setText('联网搜索')
@@ -1474,7 +1515,6 @@ class ChatWindow(QDialog):
         bar.addWidget(self.web_settings_button)
         chat_main_layout.addWidget(self.model_toolbar)
         self._sync_chat_selectors()
-        self._update_chat_provider_label()
         self._sync_web_search_toggle()
         self.web_search_toggle.toggled.connect(self._change_web_search_toggle)
         self.web_settings_button.clicked.connect(self._open_web_search_settings)
@@ -2172,40 +2212,24 @@ class ChatWindow(QDialog):
         self._sync_web_search_toggle()
 
     def _sync_chat_selectors(self) -> None:
-        # Provider selector is independent from settings.active_provider. Each chat
-        # Provider brings its own base URL, API key, protocol and default parameters.
-        protocol_labels = {
-            'openai_chat': 'Chat Completions',
-            'openai_responses': 'Responses',
-            'anthropic_messages': 'Claude Messages',
-        }
         self.chat_provider_selector.blockSignals(True)
         self.chat_provider_selector.clear()
         for pid, provider in self.settings.providers.items():
-            protocol = protocol_labels.get(provider.api_protocol, provider.api_protocol)
-            label = f'{provider.name} · {provider.model} · {protocol}'
-            self.chat_provider_selector.addItem(label, pid)
-            index = self.chat_provider_selector.count() - 1
-            self.chat_provider_selector.setItemData(
-                index,
-                f'API：{provider.name}\n模型：{provider.model}\n协议：{provider.api_protocol}\n地址：{provider.base_url}',
-                Qt.ItemDataRole.ToolTipRole,
-            )
-        selected_provider = self.settings.effective_chat_provider_id
-        provider_index = self.chat_provider_selector.findData(selected_provider)
-        if provider_index >= 0:
-            self.chat_provider_selector.setCurrentIndex(provider_index)
+            self.chat_provider_selector.addItem(provider.name or pid, pid)
+        # Older patched installations can still carry a pre-v5 ChatSettings.
+        # Prefer the full chat Provider property; fall back only for compatibility.
+        provider_id = getattr(self.settings, 'conversation_provider_id', None) or self.settings.active_provider
+        idx = self.chat_provider_selector.findData(provider_id)
+        self.chat_provider_selector.setCurrentIndex(idx if idx >= 0 else 0)
+        active_provider = self.settings.conversation_config
+        self.chat_provider_selector.setToolTip(
+            f'聊天 API：{active_provider.name}\n协议：{active_provider.api_protocol}\n'
+            f'地址：{active_provider.base_url}\n与自主决策 API 相互独立')
         self.chat_provider_selector.blockSignals(False)
-
         self.chat_model_selector.blockSignals(True)
         self.chat_model_selector.clear()
         current = self.settings.conversation_config.model
-        provider = self.settings.providers.get(selected_provider)
-        # Do not list models from other Providers here: choosing a model from a
-        # different API used to replace only the model string while retaining the
-        # active Provider's protocol, URL and credentials.
-        choices = [provider.model if provider else '', current]
-        for name in dict.fromkeys(choices):
+        for name in dict.fromkeys([current] + [p.model for p in self.settings.providers.values()]):
             if name:
                 self.chat_model_selector.addItem(name)
         self.chat_model_selector.setCurrentText(current)
@@ -2224,22 +2248,19 @@ class ChatWindow(QDialog):
         self.chat_effort_selector.setCurrentIndex(idx)
         self.chat_effort_selector.blockSignals(False)
 
-    def _commit_chat_preferences(self, *, provider_id=None, model=None, effort=None) -> None:
-        # Read fresh config; this prevents stale UI state from overwriting autonomy
-        # or API-list selection. Only chat_provider/chat_* fields are changed here.
+    def _commit_chat_preferences(self, *, model=None, effort=None, provider_id=None) -> None:
+        # 只写聊天相关字段，绝不改 active_provider / autonomy_provider。
         latest = self.config.chat_settings()
-        old_chat_provider = latest.effective_chat_provider_id
-        if provider_id is not None and provider_id in latest.providers:
-            latest.chat_provider = str(provider_id)
-            if latest.chat_provider != old_chat_provider and model is None:
-                # A Provider switch resets the model override to that Provider's
-                # configured default, preventing a Claude model leaking into GPT.
+        if provider_id is not None:
+            if provider_id not in latest.providers:
+                return
+            latest.chat_provider = provider_id
+            # 直接换 API 时使用该 Provider 的默认模型，不继承其他协议的模型 ID。
+            if model is None:
                 latest.chat_model = ''
         if model is not None:
-            selected = latest.effective_chat_provider_id
-            default_model = latest.providers[selected].model if selected in latest.providers else ''
-            value = str(model).strip()[:256]
-            latest.chat_model = value if value and value.casefold() != default_model.strip().casefold() else ''
+            chosen = latest.providers[latest.conversation_provider_id]
+            latest.chat_model = model[:256] if model != chosen.model else ''
         if effort is not None:
             if effort == 'inherit':
                 latest.chat_thinking, latest.chat_reasoning_effort = '', ''
@@ -2251,35 +2272,62 @@ class ChatWindow(QDialog):
         self.config.save()
         self.settings = self.config.chat_settings()
         self._sync_chat_selectors()
-        self._update_chat_provider_label()
+        self.provider_label.setText(self.settings.conversation_config.model)
+        self.provider_label.setToolTip(self.settings.conversation_config.model)
 
     def _change_chat_provider(self, *_args) -> None:
-        provider_id = str(self.chat_provider_selector.currentData() or '')
-        if provider_id and provider_id in self.settings.providers:
-            if provider_id != self.settings.effective_chat_provider_id:
-                self._commit_chat_preferences(provider_id=provider_id)
+        pid = str(self.chat_provider_selector.currentData() or '')
+        if pid in self.settings.providers and pid != self.settings.conversation_provider_id:
+            self._commit_chat_preferences(provider_id=pid)
 
     def _change_chat_model(self, *_args) -> None:
         model = self.chat_model_selector.currentText().strip()
-        if model and model != self.settings.conversation_config.model:
-            self._commit_chat_preferences(model=model)
+        if not model:
+            self._sync_chat_selectors()
+            return
+        # 关键修复：用户从聊天下拉列表切换 GPT -> Claude 时，
+        # 必须一起切换到该模型对应的完整 API 配置，而不是只换字符串。
+        matched = [pid for pid, provider in self.settings.providers.items()
+                   if str(provider.model).strip().casefold() == model.casefold()]
+        current = self.settings.conversation_provider_id
+        if len(matched) == 1:
+            pid = matched[0]
+        elif len(matched) > 1:
+            if current not in matched:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, '请选择聊天 API',
+                                    '多个 API Provider 都配置了这个模型，请先在「聊天 API」下拉框中选择正确的一个。')
+                self._sync_chat_selectors()
+                return
+            pid = current
+        else:
+            pid = current
+            provider = self.settings.providers[current]
+            # 手动输入的新模型没有任何关联 Provider 时，防止把 Claude 模型 ID
+            # 直接塞进 GPT Provider 触发 messages.0/system HTTP 400。
+            if (model.casefold().split('/')[-1].startswith('claude-')
+                    and provider.model.casefold().split('/')[-1].startswith('gpt-')
+                    and provider.api_protocol != 'anthropic_messages'):
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, '需要先配置 Claude API',
+                                    '当前「聊天 API」是 GPT Provider，且 API 列表中没有找到此 Claude 模型。\n'
+                                    '请先在桌宠 API 列表创建或选择 Claude Provider，并设置正确的请求协议，'
+                                    '然后回到聊天窗口选择对应模型。')
+                self._sync_chat_selectors()
+                return
+        if pid != current or model != self.settings.conversation_config.model:
+            self._commit_chat_preferences(provider_id=pid, model=model)
 
     def _change_chat_effort(self, *_args) -> None:
         self._commit_chat_preferences(effort=str(self.chat_effort_selector.currentData() or 'inherit'))
-
-    def _update_chat_provider_label(self) -> None:
-        config = self.settings.conversation_config
-        self.provider_label.setText(config.model)
-        self.provider_label.setToolTip(
-            f'聊天 API：{config.name}\n协议：{config.api_protocol}\n地址：{config.base_url}'
-        )
 
     def refresh_settings(self) -> None:
         self.settings = self.config.chat_settings()
         self._sync_chat_selectors()
         self._sync_web_search_toggle()
         self.settings = self.config.chat_settings()
-        self._update_chat_provider_label()
+        self.provider_label.setText(self.settings.conversation_config.model)
+        self.provider_label.setToolTip(self.settings.conversation_config.model)
         self._apply_character_theme()
         self._style()
         self._refresh_sessions()
@@ -2387,8 +2435,15 @@ class ChatWindow(QDialog):
         self._active_request_id = request_id
         from ..desktop_agent import task_from_message, OpenClawProvider
         task = task_from_message(text)
-        agent_provider = (OpenClawProvider(self.config.get("desktop_agent", {}), self.session.session_id, task)
-                          if task is not None else None)
+        agent_history = [
+            {"role": item.role, "content": item.content, "created_at": item.created_at}
+            for item in self.session.messages[:-1]
+            if getattr(item, "role", "") in ("user", "assistant")
+            and str(getattr(item, "content", "") or "").strip()
+        ] if task is not None else []
+        agent_provider = (OpenClawProvider(
+            self.config.get("desktop_agent", {}), self.session.session_id, task, history=agent_history
+        ) if task is not None else None)
         if agent_provider is not None:
             messages = []  # Agent only receives explicit task, never pet chat history.
         self.service.send(messages, config, request_id=request_id, provider=agent_provider)

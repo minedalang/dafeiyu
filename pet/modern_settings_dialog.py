@@ -1980,6 +1980,7 @@ class ModernSettingsDialog(QDialog):
                             "desktop_agent_model",
                             "desktop_agent_backend_model",
                             "desktop_agent_thinking",
+                            "desktop_agent_context_summary",
                             "desktop_agent_token",
                             "desktop_agent_allowed_windows",
                             "desktop_agent_test",

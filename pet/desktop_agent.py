@@ -2,8 +2,9 @@
 """Opt-in OpenClaw Gateway bridge. No Qt imports; safe to test without Windows.
 
 Only an explicit /agent command reaches the external operator-capable Gateway.
-No conversation archive, attachments, screenshots, or regular autonomous decisions
-are forwarded by this bridge.
+When enabled, recent plain-text chat is compressed by Dafeiyu's chat model and
+only the short summary is forwarded. Full history, attachments, screenshots, and
+regular autonomous decisions are never forwarded by this bridge.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 PREFIX = re.compile(r'^\s*[/／]agent(?:\s+|$)', re.IGNORECASE)
 TOKEN_REF = 'desktop-agent/openclaw-gateway'
@@ -23,6 +24,7 @@ DEFAULTS = {
     'agent_model': 'openclaw/default',
     'backend_model': '',
     'thinking_level': 'default',
+    'include_chat_context': True,
     'windows_allowlist': [],
 }
 
@@ -30,6 +32,19 @@ DEFAULTS = {
 def task_from_message(text: str) -> str | None:
     matched = PREFIX.match(str(text or ''))
     return text[matched.end():].strip() if matched else None
+
+
+def set_agent_prefix(text: str, enabled: bool) -> str:
+    """Switch the explicit /agent prefix without modifying the typed task body."""
+    value = str(text or '')
+    match = PREFIX.match(value)
+    if enabled:
+        return value if match else '/agent ' + value
+    # Our own toggle inserts exactly one separator. Remove only that separator
+    # so the user's original leading whitespace survives a toggle round-trip.
+    if value[:7].lower() == '/agent ':
+        return value[7:]
+    return value[match.end():] if match else value
 
 
 def normalized_settings(raw) -> dict:
@@ -42,6 +57,7 @@ def normalized_settings(raw) -> dict:
     result['backend_model'] = str(src.get('backend_model') or '').strip()[:160]
     level = str(src.get('thinking_level') or 'default').strip().lower()
     result['thinking_level'] = level if level in {'default','off','low','medium','high','xhigh','max','ultra'} else 'default'
+    result['include_chat_context'] = src.get('include_chat_context', True) is True
     whitelist = src.get('windows_allowlist')
     if isinstance(whitelist, str):
         whitelist = whitelist.splitlines()
@@ -107,6 +123,7 @@ class OpenClawProvider:
     settings: dict
     conversation_id: str
     task: str
+    history: list[dict] = field(default_factory=list)
 
     def stream(self, messages, config, cancel, *, response_holder=None):
         from .chat.providers import StreamEvent
@@ -119,19 +136,30 @@ class OpenClawProvider:
         token = _gateway_token()
         if not token:
             raise RuntimeError('没有找到 OpenClaw Gateway Token，请在 AI 设置中填写并保存。')
-        # Isolated session namespace. Only a task string is sent, not normal pet chat history.
+        # Only an explicit /agent task reaches this code. If enabled, recent chat
+        # history is sent to Dafeiyu's chat model for compression; only the short
+        # summary (never the raw transcript) is then sent to OpenClaw.
+        content = self.task[:12000]
+        if settings['include_chat_context'] and self.history and config is not None:
+            yield StreamEvent('status', '正在整理与当前任务有关的聊天背景…')
+            from .agent_context_summary import summarize_history, compose_agent_message
+            summary = summarize_history(self.history, self.task, config, cancel)
+            if cancel.is_set():
+                return
+            content = compose_agent_message(self.task, summary)
+        # Isolated session namespace; no attachments/screenshots or full transcript.
         session = re.sub(r'[^a-zA-Z0-9_-]', '-', str(self.conversation_id))[:100] or 'pet'
         payload = {
             'model': settings['agent_model'],
             'user': 'dafeiyu:' + session,
-            'messages': [{'role': 'user', 'content': self.task[:12000]}],
+            'messages': [{'role': 'user', 'content': content}],
             'stream': True,
         }
         # /think:<level> is parsed as a per-turn inline OpenClaw directive and
         # does not change the Agent global default or the next turn's selection.
         # OpenClaw rejects unsupported tiers; never silently downgrade the level.
         if settings['thinking_level'] != 'default':
-            payload['messages'][0]['content'] = ('/think:' + settings['thinking_level'] + '\n' + self.task[:12000])
+            payload['messages'][0]['content'] = ('/think:' + settings['thinking_level'] + '\n' + content)
         headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
                    'Accept': 'text/event-stream'}
         if settings['backend_model']:

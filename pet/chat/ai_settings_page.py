@@ -163,6 +163,8 @@ class _AiSettingsPage(QWidget):
         for label, level in [('使用 OpenClaw 默认', 'default'), ('关闭思考', 'off'), ('Low', 'low'), ('Medium', 'medium'), ('High', 'high'), ('XHigh', 'xhigh'), ('Max', 'max'), ('Ultra', 'ultra')]:
             self.agent_thinking.addItem(label, level)
         self.agent_thinking.setCurrentData(agent['thinking_level'])
+        self.agent_context_summary = ToggleSwitch()
+        self.agent_context_summary.setChecked(agent['include_chat_context'])
         self.agent_key = _line_edit(password=True)
         self.agent_key.setPlaceholderText('已保存则留空；不会写入 config.json')
         self.agent_allowed_windows = QPlainTextEdit(self)
@@ -179,6 +181,7 @@ class _AiSettingsPage(QWidget):
         self.agent_model.textChanged.connect(lambda _: setattr(self, '_agent_edited', True))
         self.agent_backend_model.textChanged.connect(lambda _: setattr(self, '_agent_edited', True))
         self.agent_thinking.currentIndexChanged.connect(lambda _: setattr(self, '_agent_edited', True))
+        self.agent_context_summary.toggled.connect(lambda _: setattr(self, '_agent_edited', True))
         self.agent_allowed_windows.textChanged.connect(lambda: setattr(self, '_agent_edited', True))
         self.agent_test_button.clicked.connect(self._run_agent_test)
         self.autonomy_interval = BrowserSpinBox()
@@ -309,14 +312,14 @@ class _AiSettingsPage(QWidget):
         root.addWidget(SettingsSection("API 列表", [
             SettingRow(
                 "provider_list", "API 列表",
-                "选择当前要编辑的 API 配置项。这里的选中状态不控制 AI 对话；聊天 API 请在 AI 对话窗口顶部单独选择。",
+                "选择要编辑/切换的模型服务；保存后当前选中项会作为 active_provider 生效。",
                 provider_row,
             ),
         ], self))
         root.addWidget(SettingsSection("模型与连接", [
             SettingRow("provider_name", "Provider 名称", "用于区分当前使用的模型服务。", self.name),
             SettingRow("api_protocol", "API 请求协议",
-                       "每个 Provider 单独保存协议（无自动识别）。AI 对话与自主行为分别按各自选定的 Provider 使用对应协议。",
+                       "显式选择每个 Provider 使用的协议（无自动识别）；聊天、自主决策、主动搭话和联网检索共用。",
                        self.api_protocol),
             SettingRow("api_url", "API 地址", "当前协议的 API 根地址，如 https://4router.net/v1。", self.url),
             SettingRow("model", "模型", "发送请求时使用的模型标识。", self.model),
@@ -371,6 +374,9 @@ class _AiSettingsPage(QWidget):
             SettingRow('desktop_agent_thinking', 'Agent 思考深度',
                        '每次任务单独指定 /think 等级；如果 OpenClaw 当前模型不支持，请选默认或该模型支持的值。',
                        self.agent_thinking, parent=self),
+            SettingRow('desktop_agent_context_summary', '为 Agent 整理聊天背景',
+                       '仅在明确输入 /agent 时生效：最近最多 20 条纯文本由大肥鱼当前聊天模型压缩，发给 OpenClaw 的只有短摘要，不发送完整聊天记录、附件或截图。摘要可能有误；本次任务始终优先。关闭后只发送 /agent 后的任务原文。',
+                       self.agent_context_summary, parent=self),
             SettingRow('desktop_agent_token', 'Gateway Token',
                        '独立于 4Router API Key，保存在 Windows 系统凭据中；留空保留旧值。',
                        self.agent_key, parent=self),
@@ -1130,6 +1136,7 @@ class _AiSettingsPage(QWidget):
                 'agent_model': self.agent_model.text(),
                 'backend_model': self.agent_backend_model.text(),
                 'thinking_level': str(self.agent_thinking.currentData() or 'default'),
+                'include_chat_context': self.agent_context_summary.isChecked(),
                 'windows_allowlist': self.agent_allowed_windows.toPlainText(),
             })
             # Reject remote endpoints at save time, not only while dispatching.

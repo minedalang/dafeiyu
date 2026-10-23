@@ -63,7 +63,7 @@ QToolButton#follow-pet-button:checked { color: #ffffff; background: @ACCENT@; }
 QFrame#chat-main { background: #ffffff; border: none; border-top-right-radius: 13px; border-bottom-right-radius: 13px; }
 QFrame#chat-model-toolbar { background: #f8fafc; border: none; border-bottom: 1px solid #e6ecf4; }
 QFrame#chat-model-toolbar QLabel { color: #566379; font-size: 11px; }
-QComboBox#chat-model-selector, QComboBox#chat-effort-selector { background: #ffffff; color: #273241; border: 1px solid #cfd9e8; border-radius: 7px; min-height: 28px; padding: 1px 7px; }
+QComboBox#chat-provider-selector, QComboBox#chat-model-selector, QComboBox#chat-effort-selector { background: #ffffff; color: #273241; border: 1px solid #cfd9e8; border-radius: 7px; min-height: 28px; padding: 1px 7px; }
 QComboBox#chat-model-selector QLineEdit { color: #273241; background: transparent; border: none; }
 QFrame#chat-main-header { min-height: 55px; background: #ffffff; border: none; border-bottom: 1px solid #f0f1f4; border-top-right-radius: 13px; }
 QLabel#title-label { color: #252a32; font-size: 14px; font-weight: 600; }
@@ -131,6 +131,17 @@ QToolButton#composer-attach-button {
     color: #252a32;
 }
 QToolButton#composer-attach-button:hover { background: #f0f2f5; }
+QToolButton#composer-agent-button {
+    min-width: 50px; height: 27px; padding: 0px 10px;
+    border: 1px solid #d6dce7; border-radius: 13px;
+    background: #f6f7fa; color: #6a7282; font-weight: 600;
+}
+QToolButton#composer-agent-button:hover {
+    background: #eaf2fe; color: #286fda; border-color: #b5cef5;
+}
+QToolButton#composer-agent-button:checked {
+    background: @ACCENT@; color: #ffffff; border-color: @ACCENT@;
+}
 QToolButton#send-button {
     width: 34px; height: 34px; border: none; border-radius: 17px;
     color: #ffffff; background: @ACCENT@;
