@@ -477,6 +477,20 @@ def _merge_chat_data(raw):
     result["providers"] = providers or _default_chat_data()["providers"]
     active = str(result.get("active_provider") or "")
     result["active_provider"] = active if active in result["providers"] else next(iter(result["providers"]))
+    # The chat window has its own Provider selection. Older configs only stored
+    # chat_model, so infer the Provider once when that model uniquely matches a
+    # configured Provider's default model; otherwise retain the former active API.
+    chat_provider = str(raw.get("chat_provider") or "").strip()
+    if chat_provider not in result["providers"]:
+        chat_model = str(result.get("chat_model") or "").strip()
+        matches = [
+            pid for pid, provider in result["providers"].items()
+            if isinstance(provider, dict)
+            and chat_model
+            and str(provider.get("model") or "").strip().casefold() == chat_model.casefold()
+        ]
+        chat_provider = matches[0] if len(matches) == 1 else result["active_provider"]
+    result["chat_provider"] = chat_provider
     return result
 
 
@@ -1256,6 +1270,7 @@ class Config:
             "network_info_menu_enabled": True,
             "proactive_screen": _default_proactive_screen_data(),
             "agent_link": _default_agent_link_data(),
+            "desktop_agent": {"enabled": False, "gateway_url": "http://127.0.0.1:18789", "agent_model": "openclaw/default", "windows_allowlist": []},
             "file_interpret": _default_file_interpret_data(),
             "chat_ui_style": "modern",  # modern / classic（仅聊天窗口保留双实现）
             "chat_follow_pet": False,  # 聊天窗口是否跟随桌宠移动
@@ -1643,6 +1658,9 @@ class Config:
             self.data["proactive_screen"] = _merge_proactive_screen_data(raw["proactive_screen"])
         if "agent_link" in raw:
             self.data["agent_link"] = _merge_agent_link_data(raw["agent_link"])
+        if "desktop_agent" in raw:
+            from .desktop_agent import normalized_settings
+            self.data["desktop_agent"] = normalized_settings(raw["desktop_agent"])
         if "file_interpret" in raw:
             self.data["file_interpret"] = _merge_file_interpret_data(raw["file_interpret"])
         self._migrate_click_sound_config(raw)
@@ -2223,6 +2241,7 @@ class Config:
             "throw_strength",
             "drop_gravity",
             "agent_link",
+            "desktop_agent",
             "file_interpret",
             "idle_low_fps_enabled",
             "idle_low_fps_threshold",
@@ -2294,6 +2313,11 @@ class Config:
         避免明文落盘——key 只保留在内存（self.data），重启需重输。
         """
         write_data = copy.deepcopy(self.data)
+        # Defense in depth: never persist a manually injected Gateway token.
+        agent = write_data.get("desktop_agent")
+        if isinstance(agent, dict):
+            for secret_name in ("token", "gateway_token", "api_key", "password"):
+                agent.pop(secret_name, None)
         chat = write_data.get("chat")
         if isinstance(chat, dict):
             providers = chat.get("providers")

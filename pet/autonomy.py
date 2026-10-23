@@ -528,7 +528,7 @@ class AutonomyService(QObject):
                 return
             world, _animations = observed
             settings = self._config.chat_settings()
-            provider = settings.active_config
+            provider = settings.autonomy_config
             provider.api_key = self._config.resolve_api_key(provider)
             if visual_frame is not None and not provider.vision_same_as_chat:
                 from .chat.models import SecretStore
@@ -746,7 +746,7 @@ class AutonomyService(QObject):
             world = {**world, "user_message": user_message}
         try:
             settings = self._config.chat_settings()
-            provider = settings.active_config
+            provider = settings.autonomy_config
             provider.api_key = self._config.resolve_api_key(provider)
             if self._screen_enabled and not provider.vision_same_as_chat:
                 from .chat.models import SecretStore

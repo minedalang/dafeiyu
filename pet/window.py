@@ -3551,7 +3551,7 @@ class PetWindow(QWidget, WindowFeatureGateMixin):
         # 在主线程解析好快照，避免后台 worker 线程改写共享配置对象
         import copy
         settings = self.cfg.chat_settings()
-        provider = copy.copy(settings.active_config)
+        provider = copy.copy(settings.conversation_config)
         provider.api_key = self.cfg.resolve_api_key(provider)
         system_prompt = settings.default_system_prompt
         # 自我识别提示用的角色显示名（截图里的桌宠就是它自己）；别名优先

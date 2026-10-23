@@ -61,6 +61,10 @@ QToolButton#follow-pet-button:hover, QToolButton#delete-session-button:hover,
 QToolButton#clear-session-button:hover { background: #e8ecf2; }
 QToolButton#follow-pet-button:checked { color: #ffffff; background: @ACCENT@; }
 QFrame#chat-main { background: #ffffff; border: none; border-top-right-radius: 13px; border-bottom-right-radius: 13px; }
+QFrame#chat-model-toolbar { background: #f8fafc; border: none; border-bottom: 1px solid #e6ecf4; }
+QFrame#chat-model-toolbar QLabel { color: #566379; font-size: 11px; }
+QComboBox#chat-model-selector, QComboBox#chat-effort-selector { background: #ffffff; color: #273241; border: 1px solid #cfd9e8; border-radius: 7px; min-height: 28px; padding: 1px 7px; }
+QComboBox#chat-model-selector QLineEdit { color: #273241; background: transparent; border: none; }
 QFrame#chat-main-header { min-height: 55px; background: #ffffff; border: none; border-bottom: 1px solid #f0f1f4; border-top-right-radius: 13px; }
 QLabel#title-label { color: #252a32; font-size: 14px; font-weight: 600; }
 QLabel#subtitle-label { color: #7189c7; font-size: 10px; }

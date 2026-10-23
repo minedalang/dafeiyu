@@ -401,7 +401,7 @@ class ChatWindow(QDialog):
     def _new_session(self):
         session = self.store.create(
             self.character_id,
-            self.settings.active_provider,
+            self.settings.conversation_config.provider_id,
             self.prompt_builder.effective_system_prompt(self.settings, self.character_id),
         )
         self.store.save(session)
@@ -476,7 +476,7 @@ class ChatWindow(QDialog):
         self.status = QLabel("就绪")
         self.status.setObjectName("status-label")
         context_top.addWidget(self.status)
-        self.provider_label = QLabel(self.settings.active_config.name)
+        self.provider_label = QLabel(self.settings.conversation_config.name)
         self.provider_label.setObjectName("provider-label")
         context_top.addWidget(self.provider_label)
         context_top.addStretch(1)
@@ -888,7 +888,7 @@ class ChatWindow(QDialog):
 
     def refresh_settings(self) -> None:
         self.settings = self.config.chat_settings()
-        self.provider_label.setText(self.settings.active_config.name)
+        self.provider_label.setText(self.settings.conversation_config.name)
         self._apply_character_theme()
         self._style()
         self._refresh_sessions()
@@ -953,14 +953,20 @@ class ChatWindow(QDialog):
         # 整会话冗余 save：与 widgets.py 同款——append_message 已原子落盘，
         # 此处仅作「会话被并发删除后本地兜底」的复活机制（R3 复审：保留）。
         self.store.save(self.session)
-        config = self.settings.active_config
+        config = self.settings.conversation_config
         config.api_key = self.config.resolve_api_key(config)
         messages = self.prompt_builder.build_messages(self.settings, self.character_id, self.session.messages[:-1], text)
         # 与 widgets.py 同款：id 必须先落本窗在途状态再 send（`started` 在
         # send() 内同步发出，晚赋值会让 `_started` 的 id 过滤恒命中）。
         request_id = uuid.uuid4().hex
         self._active_request_id = request_id
-        self.service.send(messages, config, request_id=request_id)
+        from ..desktop_agent import task_from_message, OpenClawProvider
+        task = task_from_message(text)
+        agent_provider = (OpenClawProvider(self.config.get("desktop_agent", {}), self.session.session_id, task)
+                          if task is not None else None)
+        if agent_provider is not None:
+            messages = []  # Agent only receives explicit task, never pet chat history.
+        self.service.send(messages, config, request_id=request_id, provider=agent_provider)
         self._bottom()
 
     def _focus_chat(self) -> None:

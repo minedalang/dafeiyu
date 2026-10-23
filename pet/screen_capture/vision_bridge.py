@@ -68,13 +68,13 @@ def image_to_jpeg_bytes(image: QImage, *, max_edge: int, quality: int) -> bytes:
 def resolve_chat_context(config) -> tuple[Any, str]:
     """解析聊天/视觉通道上下文：``(provider, system_prompt)``。
 
-    与 ``pet/window.py::_on_look_screen`` 逐点同口径：取当刻聊天设置的活动
-    provider 副本、把 API Key 解析进去（拷副本，避免把解析后的密钥写回配置
+    与 ``pet/window.py::_on_look_screen`` 逐点同口径：取聊天窗口独立选择的
+    Provider 副本、把 API Key 解析进去（拷副本，避免把解析后的密钥写回配置
     里的共享对象）、system prompt 用人设那份。配置面不可用时抛异常——由调用方
     转成给用户看的理由，不在这里静默降级。
     """
     settings = config.chat_settings()
-    provider = copy.copy(settings.active_config)
+    provider = copy.copy(settings.conversation_config)
     provider.api_key = config.resolve_api_key(provider)
     return provider, str(settings.default_system_prompt or "")
 

@@ -244,7 +244,7 @@ class FileInterpretController(QObject):
             return
 
         settings = self._win.cfg.chat_settings()
-        provider = copy.copy(settings.active_config)
+        provider = copy.copy(settings.conversation_config)
         # 文件内容已随消息给出，不走联网检索（省一次检索请求和等待）
         provider.web_search = None
         provider.api_key = self._win.cfg.resolve_api_key(provider)
@@ -274,7 +274,7 @@ class FileInterpretController(QObject):
 
         character_id = str(self._win.cfg.get("character", DEFAULT_CHARACTER))
         system_prompt = self._prompt_builder.effective_system_prompt(settings, character_id)
-        session = self._store.create(character_id, settings.active_provider, system_prompt)
+        session = self._store.create(character_id, settings.conversation_config.provider_id, system_prompt)
         session.custom_title = (
             f"文件解读：{paths[0].name}" if len(paths) == 1 else f"文件解读：{len(paths)} 个文件"
         )

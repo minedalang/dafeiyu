@@ -1961,7 +1961,7 @@ class ModernSettingsDialog(QDialog):
                 [
                     ("API 列表", claim("provider_list")),
                     (
-                        "模型与连接",
+                        "AI 对话 · 模型与连接",
                         claim(
                             "provider_name",
                             "api_protocol",
@@ -1973,20 +1973,26 @@ class ModernSettingsDialog(QDialog):
                         ),
                     ),
                     (
-                        "深度思考与联网",
+                        "电脑 Agent · OpenClaw",
                         claim(
-                            "thinking_mode",
-                            "reasoning_effort",
-                            "web_search_enabled",
-                            "web_search_engine",
-                            "web_search_key",
-                            "web_search_max_results",
-                            "web_search_fetch_pages",
+                            "desktop_agent_enabled",
+                            "desktop_agent_gateway",
+                            "desktop_agent_model",
+                            "desktop_agent_backend_model",
+                            "desktop_agent_thinking",
+                            "desktop_agent_token",
+                            "desktop_agent_allowed_windows",
+                            "desktop_agent_test",
+                            "desktop_agent_test_result",
                         ),
                     ),
                     (
                         "AI 自主行为",
                         claim(
+                            "autonomy_provider",
+                            "autonomy_model",
+                            "autonomy_thinking",
+                            "autonomy_reasoning_effort",
                             "autonomy_enabled",
                             "autonomy_screen_enabled",
                             "autonomy_screen_whitelist",

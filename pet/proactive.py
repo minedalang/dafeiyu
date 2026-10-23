@@ -643,7 +643,9 @@ class ProactiveScreenWatcher:
         import copy
 
         chat_settings = self.cfg.chat_settings()
-        provider = copy.copy(chat_settings.active_config)
+        # Follow the chat window's selected Provider, not the settings editor's
+        # active_provider; an optional vision-specific endpoint is resolved below.
+        provider = copy.copy(chat_settings.conversation_config)
         provider.api_key = self.cfg.resolve_api_key(provider)
         if not eff.get("prefer_free_provider", True):
             provider.vision_same_as_chat = True

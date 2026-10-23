@@ -25,9 +25,16 @@
 
 程序保存后，配置中含 `api_protocol` 字段，之后**不会因模型名或域名变化而擅自切换**。截图中的 `https://4router.net/v1` + `claude-haiku-5-5` 属于第一种迁移情况，安装后应显示 Anthropic / Claude Messages。升级后请仍先打开设置确认选项，再测试连接。
 
+## Provider 选择与协议隔离
+
+API 请求协议属于每个 Provider 配置项。现代 AI 对话窗口另有「聊天 API」选择器，选择某个已配置 Provider 后，会同时使用该 Provider 的 `base_url`、`api_protocol`、API Key、超时和生成参数。它不读取设置页 API 列表当前的 `active_provider` 作为请求路由。
+
+聊天窗口的模型下拉框只列出当前聊天 Provider 的默认模型，避免把另一个 Provider 的模型名套在当前 Provider 的协议上。若要使用 Claude Messages API，请在聊天窗口的「聊天 API」中明确选择配置了 `anthropic_messages` 的 Provider；仅输入 `claude-*` 模型名不会自动改变协议。
+
 ## 一致性
 
-- 普通聊天（含流式回答）、AI 自主决策、主动搭话、点击触发对话，都由选定协议的请求适配器统一处理。
+- 普通聊天（含流式回答）、快速聊天、聊天相关的屏幕问答与文件解读，使用聊天窗口选定 Provider 的请求适配器。
+- AI 自主决策与主动搭话等自主行为流程使用独立的自主 Provider 配置；不跟随聊天窗口的 Provider。
 - 联网搜索的工具调用会按所选协议转换：Chat Completions `tool_calls`、Responses `function_call`、Anthropic `tool_use`。
 - System Prompt 在 Anthropic 请求中转到顶层 `system`；在 OpenAI Responses/Chat 中使用对应的消息格式。
 - 响应解析支持 Chat Completions `choices`、Responses `output` 和 Anthropic `content`。

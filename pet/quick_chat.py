@@ -279,7 +279,7 @@ class QuickChatBubble(QFrame):
     def _new_session(self):
         session = self.store.create(
             self.character_id,
-            self.settings.active_provider,
+            self.settings.conversation_config.provider_id,
             self.prompt_builder.effective_system_prompt(self.settings, self.character_id),
         )
         self.store.save(session)
@@ -399,13 +399,19 @@ class QuickChatBubble(QFrame):
         self._pages = []
         self.page_widget.setVisible(False)
         self.hint_label.setText("思考中…")
-        config = self.settings.active_config
+        config = self.settings.conversation_config
         config.api_key = self.config.resolve_api_key(config)
         messages = self.prompt_builder.build_messages(
             self.settings, self.character_id, self.session.messages[:-1], text
         )
         self._request_pet_window = self.pet_window
-        self._active_request_id = self.service.send(messages, config)
+        from .desktop_agent import task_from_message, OpenClawProvider
+        task = task_from_message(text)
+        agent_provider = (OpenClawProvider(self.config.get("desktop_agent", {}), self.session.session_id, task)
+                          if task is not None else None)
+        if agent_provider is not None:
+            messages = []
+        self._active_request_id = self.service.send(messages, config, provider=agent_provider)
         self.user_message_sent.emit(text)
 
     def _started(self, request_id: str) -> None:

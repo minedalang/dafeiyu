@@ -115,31 +115,137 @@ class ChatSettings:
     enabled: bool=True; active_provider: str='openai-main'; default_system_prompt: str='你是一只可爱的桌面宠物，请用自然、友善的中文和用户交流。'; history_message_limit: int=40; history_char_limit: int=24000; providers: dict[str,ProviderConfig]=field(default_factory=dict); web_search: WebSearchSettings=field(default_factory=WebSearchSettings)
     autonomy_enabled: bool=False; autonomy_screen_enabled: bool=False; autonomy_interval_seconds: int=40
     autonomy_screen_whitelist: list[str]=field(default_factory=list)
+    # Independent autonomous-decision / proactive-speech model selection.
+    # Empty values are resolved to the settings-page active_provider for legacy configs.
+    autonomy_provider: str=''
+    autonomy_model: str=''
+    autonomy_thinking: str=''
+    autonomy_reasoning_effort: str=''
+    chat_model: str=''
+    chat_thinking: str=''
+    chat_reasoning_effort: str=''
+    # Chat window chooses a Provider independently from the API-settings editor.
+    # Empty means "resolve from legacy config / active provider" until persisted.
+    chat_provider: str=''
     def __post_init__(self): self.attach_runtime()
     def attach_runtime(self):
-        """把全局联网设置挂到每个 provider 上，调用点拿 active_config 即可带上。"""
+        """把全局联网设置挂到每个 Provider；各用途取副本时会再次明确绑定。"""
         for p in self.providers.values(): p.web_search=self.web_search
     @classmethod
     def defaults(cls):
-        p=ProviderConfig('openai-main'); return cls(providers={p.provider_id:p})
+        p=ProviderConfig('openai-main')
+        return cls(providers={p.provider_id:p}, autonomy_provider=p.provider_id)
     @classmethod
     def from_dict(cls,raw):
         raw=raw if isinstance(raw,dict) else {}; d=cls.defaults(); pr=raw.get('providers') if isinstance(raw.get('providers'),dict) else {}
         providers={str(k):ProviderConfig.from_dict(k,v) for k,v in pr.items() if isinstance(v,dict)} or d.providers
         active=str(raw.get('active_provider',next(iter(providers)))); active=active if active in providers else next(iter(providers))
+        chat_model = str(raw.get('chat_model') or '').strip()[:256]
+        raw_chat_provider = str(raw.get('chat_provider') or '').strip()
+        if raw_chat_provider in providers:
+            chat_provider = raw_chat_provider
+        else:
+            # One-time migration for old chat_model-only configs: if the selected
+            # model exactly matches one configured Provider's default model, bind
+            # the chat window to that Provider (including its URL, key and protocol).
+            matches = [
+                pid for pid, provider in providers.items()
+                if chat_model and provider.model.strip().casefold() == chat_model.casefold()
+            ]
+            chat_provider = matches[0] if len(matches) == 1 else active
+        # Canonicalize "override equals provider default" to empty so later edits
+        # to that Provider's default model continue to apply.
+        if chat_model and chat_provider in providers and providers[chat_provider].model.strip().casefold() == chat_model.casefold():
+            chat_model = ''
         return cls(bool(raw.get('enabled',True)),active,str(raw.get('default_system_prompt',d.default_system_prompt)),_safe_int(raw.get('history_message_limit',40),40,lo=1),_safe_int(raw.get('history_char_limit',24000),24000,lo=100),providers,WebSearchSettings.from_dict(raw.get('web_search')),
                    raw.get('autonomy_enabled') is True,
                    raw.get('autonomy_screen_enabled') is True,
                    _safe_int(raw.get('autonomy_interval_seconds',40),40,lo=20,hi=300),
-                   list(_normalize_autonomy_whitelist(raw.get('autonomy_screen_whitelist', []))))
+                   list(_normalize_autonomy_whitelist(raw.get('autonomy_screen_whitelist', []))),
+                   str(raw.get('autonomy_provider') or '').strip() if str(raw.get('autonomy_provider') or '').strip() in providers else active,
+                   str(raw.get('autonomy_model') or '').strip(),
+                   _choice(raw.get('autonomy_thinking', ''), ('',) + THINKING_MODES, ''),
+                   _effort_text(raw.get('autonomy_reasoning_effort'), default=''),
+                   chat_model,
+                   _choice(raw.get('chat_thinking', ''), ('',)+THINKING_MODES, ''),
+                   _effort_text(raw.get('chat_reasoning_effort'), default=''),
+                   chat_provider)
     def to_dict(self,include_secrets=True):
         return {'enabled':self.enabled,'active_provider':self.active_provider,'default_system_prompt':self.default_system_prompt,'history_message_limit':self.history_message_limit,'history_char_limit':self.history_char_limit,'providers':{k:v.to_dict(include_secrets) for k,v in self.providers.items()},'web_search':self.web_search.to_dict(include_secrets),
                 'autonomy_enabled':self.autonomy_enabled,'autonomy_screen_enabled':self.autonomy_screen_enabled,
                 'autonomy_interval_seconds':_safe_int(self.autonomy_interval_seconds,40,lo=20,hi=300),
-                'autonomy_screen_whitelist':list(_normalize_autonomy_whitelist(self.autonomy_screen_whitelist))}
+                'autonomy_screen_whitelist':list(_normalize_autonomy_whitelist(self.autonomy_screen_whitelist)),
+                'autonomy_provider':self.autonomy_provider,
+                'autonomy_model':self.autonomy_model,
+                'autonomy_thinking':self.autonomy_thinking,
+                'autonomy_reasoning_effort':self.autonomy_reasoning_effort,
+                'chat_provider':self.effective_chat_provider_id,
+                'chat_model':self.chat_model if (not self.chat_provider or self.chat_provider in self.providers) else '',
+                'chat_thinking':self.chat_thinking,
+                'chat_reasoning_effort':self.chat_reasoning_effort}
     @property
     def active_config(self):
+        """Provider currently selected in the API settings editor."""
         p=self.providers[self.active_provider]; p.web_search=self.web_search; return p
+
+    @property
+    def effective_chat_provider_id(self) -> str:
+        """Provider chosen by the chat window, independent of active_provider."""
+        if self.chat_provider in self.providers:
+            return self.chat_provider
+        if self.chat_model:
+            matches = [
+                pid for pid, provider in self.providers.items()
+                if provider.model.strip().casefold() == self.chat_model.strip().casefold()
+            ]
+            if len(matches) == 1:
+                return matches[0]
+        if self.active_provider in self.providers:
+            return self.active_provider
+        return next(iter(self.providers), '')
+
+    @property
+    def conversation_config(self):
+        """Detached chat-only config. Provider protocol/URL/key come from chat_provider,
+        never from the API-settings editor's active_provider.
+        """
+        from copy import copy
+        selected = self.effective_chat_provider_id
+        if not selected:
+            raise ValueError('没有配置可用于 AI 对话的 API Provider')
+        p = copy(self.providers[selected])
+        p.web_search = self.web_search
+        # If a Provider was deleted while this object was open, don't apply its
+        # custom model override to a different fallback Provider.
+        if self.chat_model and (self.chat_provider in self.providers or
+                                p.model.strip().casefold() == self.chat_model.strip().casefold()):
+            p.model = self.chat_model
+        if self.chat_thinking in THINKING_MODES:
+            p.thinking = self.chat_thinking
+        if self.chat_reasoning_effort:
+            p.reasoning_effort = self.chat_reasoning_effort
+        elif self.chat_thinking in ('auto', 'disabled'):
+            p.reasoning_effort = ''
+        return p
+
+    @property
+    def autonomy_config(self):
+        """A detached ProviderConfig for autonomous decisions and proactive speech.
+
+        Do not mutate the shared chat provider when applying a model override.
+        An old or deleted provider ID falls back to the active chat provider.
+        """
+        from copy import copy
+        selected = self.autonomy_provider if self.autonomy_provider in self.providers else self.active_provider
+        p = copy(self.providers[selected])
+        p.web_search = self.web_search
+        if self.autonomy_model:
+            p.model = self.autonomy_model
+        if self.autonomy_thinking in THINKING_MODES:
+            p.thinking = self.autonomy_thinking
+        if self.autonomy_reasoning_effort:
+            p.reasoning_effort = self.autonomy_reasoning_effort
+        return p
 
 @dataclass
 class ChatMessage:

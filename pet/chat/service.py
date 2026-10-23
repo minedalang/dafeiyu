@@ -82,8 +82,8 @@ class ChatService(QObject):
         return not any(worker.isRunning() for worker in self._workers)
     @property
     def busy(self): return self._worker is not None and self._worker.isRunning()
-    def send(self,messages:list[dict[str,Any]],config:ProviderConfig,request_id=None):
-        self.stop(); rid=request_id or uuid.uuid4().hex; cancel=threading.Event(); worker=_Worker(self.provider,messages,config,cancel); self._request_id=rid; self._cancel=cancel; self._worker=worker
+    def send(self,messages:list[dict[str,Any]],config:ProviderConfig,request_id=None,provider=None):
+        self.stop(); rid=request_id or uuid.uuid4().hex; cancel=threading.Event(); worker=_Worker(provider or self.provider,messages,config,cancel); self._request_id=rid; self._cancel=cancel; self._worker=worker
         self._workers.add(worker)
         # 全部显式 QueuedConnection：worker 线程 emit 的信号若直连 lambda
         # 会在 worker 线程执行 _delta/_cleanup 等，与 GUI 线程的 busy()/

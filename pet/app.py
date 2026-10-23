@@ -1218,7 +1218,7 @@ class PetInstance:
                 settings = self.config.chat_settings()
                 session = store.create(
                     character_id,
-                    settings.active_provider,
+                    settings.conversation_config.provider_id,
                     settings.default_system_prompt,
                 )
             synced, _absorbed = store.append_messages(session, messages)
@@ -2032,6 +2032,9 @@ class AppShell:
     # ------------------------------------------------------------ AI 自主桌宠
     def _on_user_chat_message(self, text: str) -> None:
         """Feed direct user requests into the same allowlisted pet planner."""
+        from .desktop_agent import task_from_message
+        if task_from_message(text) is not None:
+            return  # An explicitly delegated task is not a pet-life action trigger.
         service = getattr(self, "_autonomy", None)
         if service is not None and service.enabled:
             service.queue_user_message(text)

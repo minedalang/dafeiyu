@@ -40,6 +40,7 @@ from ..autonomy_speech import speech_interval_bounds
 
 class _AiSettingsPage(QWidget):
     test_done = Signal(bool, str)
+    agent_test_done = Signal(bool, str)
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -61,6 +62,7 @@ class _AiSettingsPage(QWidget):
         self._deleted_provider_ids: set[str] = set()
         self._loading_provider = False
         self.test_done.connect(self._on_test_done)
+        self.agent_test_done.connect(self._on_agent_test_done)
 
         self.provider_combo = ModernSelect(self, width=230)
         self.add_provider_btn = QPushButton("添加", self)
@@ -122,8 +124,8 @@ class _AiSettingsPage(QWidget):
         self.web_search_fetch = ToggleSwitch()
         self.web_search_fetch.setChecked(bool(web.fetch_pages))
         self.system_notify_check = ToggleSwitch()
-        # 自主行为属于进程级 AI 偏好，复用当前活跃 Provider 的 API 与 Key。
-        # 识屏是独立同意项；打开自主行为不会隐式打开截图上传。
+        # 自主行为采用独立的 Provider/模型覆盖；旧配置默认跟随聊天模型。
+        # 截图是另一项独立同意，不会因打开自主行为而自动上传屏幕。
         self.autonomy_enabled = ToggleSwitch()
         self.autonomy_enabled.setChecked(bool(self.settings.autonomy_enabled))
         self.autonomy_screen = ToggleSwitch()
@@ -132,6 +134,53 @@ class _AiSettingsPage(QWidget):
         self.autonomy_whitelist.setPlaceholderText("每行一个可识屏的程序名，如 code.exe、chrome.exe；不支持通配符。空白名单不截屏。")
         self.autonomy_whitelist.setPlainText("\n".join(self.settings.autonomy_screen_whitelist))
         self.autonomy_whitelist.setFixedHeight(90)
+        self._autonomy_edited: set[str] = set()
+        self.autonomy_provider_combo = ModernSelect(self, width=260)
+        self._refresh_autonomy_provider_options(self.settings.autonomy_provider)
+        self.autonomy_model = _line_edit(self.settings.autonomy_model)
+        self.autonomy_model.setPlaceholderText("留空使用上方 Provider 自带的模型；填写后只影响自主行为")
+        self.autonomy_thinking = ModernSelect(self, width=230)
+        self.autonomy_thinking.addItem("沿用自主 Provider 的思考设置", "")
+        self.autonomy_thinking.addItem("跟随模型默认", "auto")
+        self.autonomy_thinking.addItem("开启深度思考", "enabled")
+        self.autonomy_thinking.addItem("关闭深度思考", "disabled")
+        self.autonomy_thinking.setCurrentData(self.settings.autonomy_thinking)
+        self.autonomy_effort = _line_edit(self.settings.autonomy_reasoning_effort)
+        self.autonomy_effort.setMaxLength(64)
+        self.autonomy_effort.setPlaceholderText("留空沿用自主 Provider；例如 low、medium、high")
+        # Desktop Agent: standalone operator Gateway, never reuses ordinary AI API key.
+        from ..desktop_agent import normalized_settings
+        agent = normalized_settings(config.get('desktop_agent', {}))
+        self.agent_enabled = ToggleSwitch()
+        self.agent_enabled.setChecked(agent['enabled'])
+        self.agent_url = _line_edit(agent['gateway_url'])
+        self.agent_url.setPlaceholderText('http://127.0.0.1:18789')
+        self.agent_model = _line_edit(agent['agent_model'])
+        self.agent_model.setPlaceholderText('openclaw/default')
+        self.agent_backend_model = _line_edit(agent['backend_model'])
+        self.agent_backend_model.setPlaceholderText('如 4router/模型ID；留空使用 OpenClaw 默认模型')
+        self.agent_thinking = ModernSelect(self, width=240)
+        for label, level in [('使用 OpenClaw 默认', 'default'), ('关闭思考', 'off'), ('Low', 'low'), ('Medium', 'medium'), ('High', 'high'), ('XHigh', 'xhigh'), ('Max', 'max'), ('Ultra', 'ultra')]:
+            self.agent_thinking.addItem(label, level)
+        self.agent_thinking.setCurrentData(agent['thinking_level'])
+        self.agent_key = _line_edit(password=True)
+        self.agent_key.setPlaceholderText('已保存则留空；不会写入 config.json')
+        self.agent_allowed_windows = QPlainTextEdit(self)
+        self.agent_allowed_windows.setPlainText('\n'.join(agent['windows_allowlist']))
+        self.agent_allowed_windows.setPlaceholderText('每行一个可操作程序名，如 notepad.exe。空白名单禁止全部 Windows 工具。')
+        self.agent_allowed_windows.setFixedHeight(72)
+        self.agent_test_button = QPushButton('测试 OpenClaw 连接', self)
+        self.agent_test_result = QLabel('测试只读取 Agent 列表，不运行任务。', self)
+        self.agent_test_result.setWordWrap(True)
+        self._agent_test_thread = None
+        self._agent_edited = False
+        self.agent_enabled.toggled.connect(lambda _: setattr(self, '_agent_edited', True))
+        self.agent_url.textChanged.connect(lambda _: setattr(self, '_agent_edited', True))
+        self.agent_model.textChanged.connect(lambda _: setattr(self, '_agent_edited', True))
+        self.agent_backend_model.textChanged.connect(lambda _: setattr(self, '_agent_edited', True))
+        self.agent_thinking.currentIndexChanged.connect(lambda _: setattr(self, '_agent_edited', True))
+        self.agent_allowed_windows.textChanged.connect(lambda: setattr(self, '_agent_edited', True))
+        self.agent_test_button.clicked.connect(self._run_agent_test)
         self.autonomy_interval = BrowserSpinBox()
         self.autonomy_interval.setRange(20, 300)
         self.autonomy_interval.setSuffix(" 秒")
@@ -147,7 +196,6 @@ class _AiSettingsPage(QWidget):
         self.autonomy_speech_max.setRange(1, 60)
         self.autonomy_speech_max.setSuffix(" 分钟")
         self.autonomy_speech_max.setValue(speech_max // 60)
-        self._autonomy_edited: set[str] = set()
         # Live autonomy diagnostics. The monitor only retains action names,
         # execution results and timings; it does not store prompts or screenshots.
         from ..autonomy_monitor import get_autonomy_monitor
@@ -261,14 +309,14 @@ class _AiSettingsPage(QWidget):
         root.addWidget(SettingsSection("API 列表", [
             SettingRow(
                 "provider_list", "API 列表",
-                "选择要编辑/切换的模型服务；保存后当前选中项会作为 active_provider 生效。",
+                "选择当前要编辑的 API 配置项。这里的选中状态不控制 AI 对话；聊天 API 请在 AI 对话窗口顶部单独选择。",
                 provider_row,
             ),
         ], self))
         root.addWidget(SettingsSection("模型与连接", [
             SettingRow("provider_name", "Provider 名称", "用于区分当前使用的模型服务。", self.name),
             SettingRow("api_protocol", "API 请求协议",
-                       "显式选择每个 Provider 使用的协议（无自动识别）；聊天、自主决策、主动搭话和联网检索共用。",
+                       "每个 Provider 单独保存协议（无自动识别）。AI 对话与自主行为分别按各自选定的 Provider 使用对应协议。",
                        self.api_protocol),
             SettingRow("api_url", "API 地址", "当前协议的 API 根地址，如 https://4router.net/v1。", self.url),
             SettingRow("model", "模型", "发送请求时使用的模型标识。", self.model),
@@ -307,10 +355,43 @@ class _AiSettingsPage(QWidget):
             SettingRow("web_search_fetch_pages", "允许阅读网页正文", "搜索摘要不够时，允许模型打开网页读取正文（更准，但更慢）。", self.web_search_fetch),
         ]
         root.addWidget(SettingsSection("深度思考与联网", thinking_web_rows, self))
+        root.addWidget(SettingsSection("电脑 Agent（OpenClaw，默认关闭）", [
+            SettingRow('desktop_agent_enabled', '允许手动 Agent 任务',
+                       '只有明确输入 /agent 加任务才会启动；自动聊天与自主决策不能操控电脑。',
+                       self.agent_enabled, parent=self),
+            SettingRow('desktop_agent_gateway', '本地 Gateway 地址',
+                       '只能连接 127.0.0.1 / localhost，默认 http://127.0.0.1:18789。',
+                       self.agent_url, parent=self),
+            SettingRow('desktop_agent_model', 'Agent 标识',
+                       'OpenClaw 的 Agent 入口（非 GPT 模型名），通常填写 openclaw/default。',
+                       self.agent_model, parent=self),
+            SettingRow('desktop_agent_backend_model', 'Agent 后端大模型',
+                       '填 OpenClaw 中真正的 provider/model ID；留空则使用该 Agent 的默认模型，不更改全局配置。',
+                       self.agent_backend_model, parent=self),
+            SettingRow('desktop_agent_thinking', 'Agent 思考深度',
+                       '每次任务单独指定 /think 等级；如果 OpenClaw 当前模型不支持，请选默认或该模型支持的值。',
+                       self.agent_thinking, parent=self),
+            SettingRow('desktop_agent_token', 'Gateway Token',
+                       '独立于 4Router API Key，保存在 Windows 系统凭据中；留空保留旧值。',
+                       self.agent_key, parent=self),
+            SettingRow('desktop_agent_allowed_windows', '允许操作的程序',
+                       '仅约束本补丁的 Windows MCP 工具，与识屏白名单无关；OpenClaw 自带 exec 等工具需在其后台单独限制。',
+                       self.agent_allowed_windows, stacked=True, parent=self),
+            SettingRow('desktop_agent_test', '测试网关',
+                       '只检测连接和凭据，不会启动 Agent。',
+                       self.agent_test_button, parent=self),
+            SettingRow('desktop_agent_test_result', '连接状态',
+                       '需要先在 OpenClaw 配置中开启 chatCompletions 接口。',
+                       self.agent_test_result, stacked=True, parent=self),
+        ], self))
         root.addWidget(SettingsSection("AI 自主行为", [
+            SettingRow("autonomy_provider", "自主行为使用的 API", "必须选择一个独立的 Provider。旧版跟随对话配置会在首次加载时固定为当时选择的 API，不再随对话切换。", self.autonomy_provider_combo, parent=self),
+            SettingRow("autonomy_model", "自主决策模型标识", "只影响自主决策、主动搭话和点击回应，留空使用对应 Provider 的模型，与聊天窗口的模型选择互不影响。", self.autonomy_model, parent=self),
+            SettingRow("autonomy_thinking", "自主行为深度思考", "可独立覆盖自主模型的思考开关；默认继承所选 Provider。", self.autonomy_thinking, parent=self),
+            SettingRow("autonomy_reasoning_effort", "自主行为思考强度", "可独立设置 medium/high 等原始参数；留空继承所选 Provider。", self.autonomy_effort, parent=self),
             SettingRow(
                 "autonomy_enabled", "让 AI 决定桌宠行为",
-                "开启后，大肥鱼定期调用当前聊天模型选择散步、靠近鼠标、表演或说话；"
+                "开启后，大肥鱼定期使用本节选择的自主模型决定散步、靠近鼠标、表演或说话；"
                 "原有点击/拖拽/抛掷优先。关闭后恢复随机行为。每次决策会产生 API 用量。",
                 self.autonomy_enabled, parent=self),
             SettingRow(
@@ -401,6 +482,14 @@ class _AiSettingsPage(QWidget):
                 "松开滑块即保存，约 1 秒内同步到正在运行的桌宠；关闭设置不会停止动画。",
                 self._edit_active_loop_button, parent=self),
         ], self))
+        self.autonomy_provider_combo.currentIndexChanged.connect(
+            lambda _: self._autonomy_edited.add("autonomy_provider"))
+        self.autonomy_model.textChanged.connect(
+            lambda _: self._autonomy_edited.add("autonomy_model"))
+        self.autonomy_thinking.currentIndexChanged.connect(
+            lambda _: self._autonomy_edited.add("autonomy_thinking"))
+        self.autonomy_effort.textChanged.connect(
+            lambda _: self._autonomy_edited.add("autonomy_reasoning_effort"))
         self.autonomy_enabled.toggled.connect(
             lambda _: self._autonomy_edited.add("autonomy_enabled"))
         self.autonomy_screen.toggled.connect(
@@ -868,6 +957,21 @@ class _AiSettingsPage(QWidget):
         self.settings.active_provider = new_id
         self._load_provider_ui(new_id)
         self._update_provider_buttons()
+        self._refresh_autonomy_provider_options()
+
+    def _refresh_autonomy_provider_options(self, value=None) -> None:
+        """Refresh selectable API entries without silently selecting chat model."""
+        combo = self.autonomy_provider_combo
+        selected = str(combo.currentData() or '') if value is None else str(value or '')
+        blocked = combo.blockSignals(True)
+        try:
+            combo.clear()
+            # No inherited-chat option: autonomy must select a real provider.
+            for pid, provider in self.settings.providers.items():
+                combo.addItem(f"{provider.name} · {provider.model}", pid)
+            combo.setCurrentData(selected if selected in self.settings.providers else self.settings.active_provider)
+        finally:
+            combo.blockSignals(blocked)
 
     def _delete_provider(self) -> None:
         if len(self.settings.providers) <= 1:
@@ -889,6 +993,7 @@ class _AiSettingsPage(QWidget):
             self._loading_provider = False
         self._load_provider_ui(self.settings.active_provider)
         self._update_provider_buttons()
+        self._refresh_autonomy_provider_options()
 
     def _update_provider_buttons(self) -> None:
         self.delete_provider_btn.setEnabled(len(self.settings.providers) > 1)
@@ -989,6 +1094,60 @@ class _AiSettingsPage(QWidget):
         self.test_result.setStyleSheet("color: #16843b;" if ok else "color: #c9362b;")
         self._test_thread = None
 
+    def _run_agent_test(self) -> None:
+        if self._agent_test_thread is not None and self._agent_test_thread.is_alive():
+            return
+        from ..desktop_agent import normalized_settings
+        settings = normalized_settings({'gateway_url': self.agent_url.text()})
+        token = self.agent_key.text().strip()
+        self.agent_test_button.setEnabled(False)
+        self.agent_test_result.setText('正在检测本地 Gateway…')
+        self._agent_test_thread = threading.Thread(
+            target=self._agent_test_worker, args=(settings, token), daemon=True,
+            name='pet-openclaw-connection-test')
+        self._agent_test_thread.start()
+
+    def _agent_test_worker(self, settings, token) -> None:
+        from ..desktop_agent import test_gateway
+        try:
+            result = test_gateway(settings, token=token)
+        except Exception as exc:
+            result = False, '配置错误：' + str(exc)
+        _safe_emit(self, 'agent_test_done', *result)
+
+    def _on_agent_test_done(self, ok: bool, message: str) -> None:
+        self.agent_test_button.setEnabled(True)
+        self.agent_test_result.setText(message)
+        self.agent_test_result.setStyleSheet('color: #16843b;' if ok else 'color: #c9362b;')
+        self._agent_test_thread = None
+
+    def _save_desktop_agent(self) -> None:
+        from ..desktop_agent import TOKEN_REF, normalized_settings
+        if self._agent_edited:
+            settings = normalized_settings({
+                'enabled': self.agent_enabled.isChecked(),
+                'gateway_url': self.agent_url.text(),
+                'agent_model': self.agent_model.text(),
+                'backend_model': self.agent_backend_model.text(),
+                'thinking_level': str(self.agent_thinking.currentData() or 'default'),
+                'windows_allowlist': self.agent_allowed_windows.toPlainText(),
+            })
+            # Reject remote endpoints at save time, not only while dispatching.
+            from ..desktop_agent import gateway_endpoint
+            try:
+                gateway_endpoint(settings['gateway_url'], '/v1/models')
+            except ValueError as exc:
+                QMessageBox.warning(self, '电脑 Agent 地址无效', str(exc))
+                settings['enabled'] = False
+            self.config.set('desktop_agent', settings)
+            self._agent_edited = False
+        token = self.agent_key.text().strip()
+        if token:
+            if not self._secret_store_type().set(TOKEN_REF, token):
+                QMessageBox.warning(self, '安全存储不可用',
+                    'OpenClaw Token 无法写入系统凭据；未保存明文。请修复 keyring 或通过 OPENCLAW_GATEWAY_TOKEN 环境变量提供。')
+            self.agent_key.clear()
+
     def _speech_min_changed(self, _value) -> None:
         self._autonomy_edited.add("autonomy_speech_min_minutes")
         if self.autonomy_speech_min.value() > self.autonomy_speech_max.value():
@@ -1000,6 +1159,7 @@ class _AiSettingsPage(QWidget):
             self.autonomy_speech_min.setValue(self.autonomy_speech_max.value())
 
     def save(self) -> None:
+        self._save_desktop_agent()
         # 保存前基于磁盘最新配置重取快照：另一个设置窗口（AI 设置/桌宠设置 AI 页）
         # 可能在本窗口打开期间改过 Provider 结构；先保留本窗口的 provider 草稿/
         # 新增/删除，再与磁盘快照合并，避免覆盖其它窗口新增的结构。
@@ -1020,7 +1180,18 @@ class _AiSettingsPage(QWidget):
         for pid in list(self.settings.providers):
             self._apply_draft_to_provider(pid)
         self.settings.default_system_prompt = self.prompt.toPlainText().strip()
+        if self.settings.autonomy_provider not in self.settings.providers:
+            self.settings.autonomy_provider = self.settings.active_provider
         # 合并最新磁盘配置后，只回写实际编辑过的自主行为字段。
+        if "autonomy_provider" in self._autonomy_edited:
+            pid = str(self.autonomy_provider_combo.currentData() or "")
+            self.settings.autonomy_provider = pid if pid in self.settings.providers else self.settings.active_provider
+        if "autonomy_model" in self._autonomy_edited:
+            self.settings.autonomy_model = self.autonomy_model.text().strip()
+        if "autonomy_thinking" in self._autonomy_edited:
+            self.settings.autonomy_thinking = str(self.autonomy_thinking.currentData() or "")
+        if "autonomy_reasoning_effort" in self._autonomy_edited:
+            self.settings.autonomy_reasoning_effort = self.autonomy_effort.text().strip()[:64]
         if "autonomy_enabled" in self._autonomy_edited:
             self.settings.autonomy_enabled = self.autonomy_enabled.isChecked()
         if "autonomy_screen_enabled" in self._autonomy_edited:
@@ -1031,7 +1202,8 @@ class _AiSettingsPage(QWidget):
             self.settings.autonomy_screen_whitelist = list(normalize_whitelist(raw))
         if "autonomy_interval_seconds" in self._autonomy_edited:
             self.settings.autonomy_interval_seconds = int(self.autonomy_interval.value())
-        self._apply_web_search_settings()
+        # Chat window owns web search preferences now. Never overwrite its newer
+        # values with hidden settings widgets created when this page was opened.
         self.config.set("chat_ui_style", self.chat_ui_style.currentData())
         self._capture_background_value()
         # 按风格脏标记合并：只回写本窗口编辑过的风格，未触风格保持磁盘最新值

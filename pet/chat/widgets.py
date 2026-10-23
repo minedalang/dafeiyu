@@ -15,7 +15,13 @@ from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, Signal, QTi
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QImageReader, QMouseEvent, QPainter, QPainterPath, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QCheckBox,
     QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QLineEdit,
+    QSpinBox,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -1234,7 +1240,7 @@ class ChatWindow(QDialog):
     def _new_session(self):
         session = self.store.create(
             self.character_id,
-            self.settings.active_provider,
+            self.settings.conversation_config.provider_id,
             self.prompt_builder.effective_system_prompt(self.settings, self.character_id),
         )
         self.store.save(session)
@@ -1379,7 +1385,7 @@ class ChatWindow(QDialog):
         title_text.setSpacing(1)
         self.title_label = QLabel("初次问候")
         self.title_label.setObjectName("title-label")
-        self.subtitle_label = QLabel("✦ 快速模式")
+        self.subtitle_label = QLabel("✦ AI 对话")
         self.subtitle_label.setObjectName("subtitle-label")
         title_text.addWidget(self.title_label)
         self.header_status = QFrame(self.title_bar)
@@ -1394,10 +1400,10 @@ class ChatWindow(QDialog):
         self.status = QLabel("就绪", self.header_status)
         self.status.setObjectName("status-label")
         header_status_layout.addWidget(self.status)
-        self.provider_label = QLabel(self.settings.active_config.model, self.header_status)
+        self.provider_label = QLabel(self.settings.conversation_config.model, self.header_status)
         self.provider_label.setObjectName("provider-label")
         self.provider_label.setMaximumWidth(150)
-        self.provider_label.setToolTip(self.settings.active_config.model)
+        self.provider_label.setToolTip(self.settings.conversation_config.model)
         header_status_layout.addWidget(self.provider_label)
         header_status_layout.addStretch(1)
         title_text.addWidget(self.header_status)
@@ -1430,6 +1436,52 @@ class ChatWindow(QDialog):
         title_layout.addWidget(self.minimize_button)
         title_layout.addWidget(self.close_button)
         chat_main_layout.addWidget(self.title_bar)
+        self.model_toolbar = QFrame(chat_main)
+        self.model_toolbar.setObjectName('chat-model-toolbar')
+        bar = QHBoxLayout(self.model_toolbar)
+        bar.setContentsMargins(18, 6, 18, 6)
+        bar.setSpacing(8)
+        bar.addWidget(QLabel('聊天 API', self.model_toolbar))
+        self.chat_provider_selector = QComboBox(self.model_toolbar)
+        self.chat_provider_selector.setObjectName('chat-provider-selector')
+        self.chat_provider_selector.setMinimumWidth(125)
+        self.chat_provider_selector.setMaximumWidth(210)
+        self.chat_provider_selector.setToolTip('只影响 AI 对话；与桌宠设置中 API 列表当前选中的项目相互独立')
+        bar.addWidget(self.chat_provider_selector)
+        bar.addWidget(QLabel('模型 ID', self.model_toolbar))
+        self.chat_model_selector = QComboBox(self.model_toolbar)
+        self.chat_model_selector.setObjectName('chat-model-selector')
+        self.chat_model_selector.setEditable(True)
+        self.chat_model_selector.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.chat_model_selector.setMinimumWidth(145)
+        self.chat_model_selector.setToolTip('仅显示当前聊天 API 的默认模型；也可以手动输入此 API 支持的模型 ID')
+        bar.addWidget(self.chat_model_selector, 1)
+        bar.addWidget(QLabel('思考深度', self.model_toolbar))
+        self.chat_effort_selector = QComboBox(self.model_toolbar)
+        self.chat_effort_selector.setObjectName('chat-effort-selector')
+        for title, val in [('默认','inherit'), ('关闭','disabled'), ('Low','low'), ('Medium','medium'), ('High','high'), ('XHigh','xhigh'), ('Max','max')]:
+            self.chat_effort_selector.addItem(title, val)
+        self.chat_effort_selector.setMinimumWidth(96)
+        bar.addWidget(self.chat_effort_selector)
+        self.web_search_toggle = QToolButton(self.model_toolbar)
+        self.web_search_toggle.setText('联网搜索')
+        self.web_search_toggle.setCheckable(True)
+        self.web_search_toggle.setToolTip('仅控制普通 AI 对话的联网检索。OpenClaw 有自己独立的联网搜索工具。')
+        bar.addWidget(self.web_search_toggle)
+        self.web_settings_button = QToolButton(self.model_toolbar)
+        self.web_settings_button.setText('搜索设置…')
+        self.web_settings_button.setToolTip('选择搜索引擎、结果数量、网页正文及搜索 API Key')
+        bar.addWidget(self.web_settings_button)
+        chat_main_layout.addWidget(self.model_toolbar)
+        self._sync_chat_selectors()
+        self._update_chat_provider_label()
+        self._sync_web_search_toggle()
+        self.web_search_toggle.toggled.connect(self._change_web_search_toggle)
+        self.web_settings_button.clicked.connect(self._open_web_search_settings)
+        self.chat_provider_selector.activated.connect(self._change_chat_provider)
+        self.chat_model_selector.activated.connect(self._change_chat_model)
+        self.chat_model_selector.lineEdit().editingFinished.connect(self._change_chat_model)
+        self.chat_effort_selector.activated.connect(self._change_chat_effort)
 
         self.content_top_spacer = QSpacerItem(
             0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding
@@ -2060,10 +2112,174 @@ class ChatWindow(QDialog):
             self._refresh_sessions()
             self._bottom()
 
+    def _sync_web_search_toggle(self) -> None:
+        current = self.config.chat_settings().web_search
+        self.web_search_toggle.blockSignals(True)
+        self.web_search_toggle.setChecked(bool(current.enabled))
+        self.web_search_toggle.blockSignals(False)
+
+    def _change_web_search_toggle(self, checked: bool) -> None:
+        latest = self.config.chat_settings()
+        latest.web_search.enabled = bool(checked)
+        self.config.set_chat_settings(latest)
+        self.config.save()
+        self.settings = self.config.chat_settings()
+
+    def _open_web_search_settings(self) -> None:
+        from .models import SecretStore
+        from .web_search import ENGINE_LABELS
+        current = self.config.chat_settings().web_search
+        dialog = QDialog(self)
+        dialog.setWindowTitle('AI 对话 · 联网搜索设置')
+        dialog.setMinimumWidth(380)
+        form = QFormLayout(dialog)
+        search_engine = QComboBox(dialog)
+        for value, label in ENGINE_LABELS.items():
+            search_engine.addItem(label, value)
+        index = search_engine.findData(current.engine)
+        search_engine.setCurrentIndex(index if index >= 0 else 0)
+        key = QLineEdit(dialog)
+        key.setEchoMode(QLineEdit.EchoMode.Password)
+        key.setPlaceholderText('不修改则留空；Key 保存到系统凭据')
+        count = QSpinBox(dialog)
+        count.setRange(1, 10)
+        count.setValue(current.max_results)
+        fetch = QCheckBox('允许搜索后读取网页正文', dialog)
+        fetch.setChecked(current.fetch_pages)
+        form.addRow('搜索引擎', search_engine)
+        form.addRow('搜索 API Key', key)
+        form.addRow('搜索结果数量', count)
+        form.addRow(fetch)
+        controls = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel, parent=dialog)
+        controls.accepted.connect(dialog.accept)
+        controls.rejected.connect(dialog.reject)
+        form.addRow(controls)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        # Persist only the conversational WebSearchSettings from latest settings.
+        latest = self.config.chat_settings()
+        latest.web_search.engine = str(search_engine.currentData() or 'baidu')
+        latest.web_search.max_results = int(count.value())
+        latest.web_search.fetch_pages = fetch.isChecked()
+        entered = key.text().strip()
+        if entered:
+            if not SecretStore().set(latest.web_search.api_key_ref or 'websearch/api', entered):
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, '凭据未保存', 'Windows 凭据存储不可用，搜索 API Key 没有保存；请修复 keyring 后重试。')
+        self.config.set_chat_settings(latest)
+        self.config.save()
+        self.settings = self.config.chat_settings()
+        self._sync_web_search_toggle()
+
+    def _sync_chat_selectors(self) -> None:
+        # Provider selector is independent from settings.active_provider. Each chat
+        # Provider brings its own base URL, API key, protocol and default parameters.
+        protocol_labels = {
+            'openai_chat': 'Chat Completions',
+            'openai_responses': 'Responses',
+            'anthropic_messages': 'Claude Messages',
+        }
+        self.chat_provider_selector.blockSignals(True)
+        self.chat_provider_selector.clear()
+        for pid, provider in self.settings.providers.items():
+            protocol = protocol_labels.get(provider.api_protocol, provider.api_protocol)
+            label = f'{provider.name} · {provider.model} · {protocol}'
+            self.chat_provider_selector.addItem(label, pid)
+            index = self.chat_provider_selector.count() - 1
+            self.chat_provider_selector.setItemData(
+                index,
+                f'API：{provider.name}\n模型：{provider.model}\n协议：{provider.api_protocol}\n地址：{provider.base_url}',
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        selected_provider = self.settings.effective_chat_provider_id
+        provider_index = self.chat_provider_selector.findData(selected_provider)
+        if provider_index >= 0:
+            self.chat_provider_selector.setCurrentIndex(provider_index)
+        self.chat_provider_selector.blockSignals(False)
+
+        self.chat_model_selector.blockSignals(True)
+        self.chat_model_selector.clear()
+        current = self.settings.conversation_config.model
+        provider = self.settings.providers.get(selected_provider)
+        # Do not list models from other Providers here: choosing a model from a
+        # different API used to replace only the model string while retaining the
+        # active Provider's protocol, URL and credentials.
+        choices = [provider.model if provider else '', current]
+        for name in dict.fromkeys(choices):
+            if name:
+                self.chat_model_selector.addItem(name)
+        self.chat_model_selector.setCurrentText(current)
+        self.chat_model_selector.blockSignals(False)
+        self.chat_effort_selector.blockSignals(True)
+        if self.settings.chat_thinking == 'disabled':
+            key = 'disabled'
+        elif self.settings.chat_thinking == 'enabled':
+            key = self.settings.chat_reasoning_effort or 'inherit'
+        else:
+            key = 'inherit'
+        idx = self.chat_effort_selector.findData(key)
+        if idx < 0:
+            self.chat_effort_selector.addItem(key, key)
+            idx = self.chat_effort_selector.findData(key)
+        self.chat_effort_selector.setCurrentIndex(idx)
+        self.chat_effort_selector.blockSignals(False)
+
+    def _commit_chat_preferences(self, *, provider_id=None, model=None, effort=None) -> None:
+        # Read fresh config; this prevents stale UI state from overwriting autonomy
+        # or API-list selection. Only chat_provider/chat_* fields are changed here.
+        latest = self.config.chat_settings()
+        old_chat_provider = latest.effective_chat_provider_id
+        if provider_id is not None and provider_id in latest.providers:
+            latest.chat_provider = str(provider_id)
+            if latest.chat_provider != old_chat_provider and model is None:
+                # A Provider switch resets the model override to that Provider's
+                # configured default, preventing a Claude model leaking into GPT.
+                latest.chat_model = ''
+        if model is not None:
+            selected = latest.effective_chat_provider_id
+            default_model = latest.providers[selected].model if selected in latest.providers else ''
+            value = str(model).strip()[:256]
+            latest.chat_model = value if value and value.casefold() != default_model.strip().casefold() else ''
+        if effort is not None:
+            if effort == 'inherit':
+                latest.chat_thinking, latest.chat_reasoning_effort = '', ''
+            elif effort == 'disabled':
+                latest.chat_thinking, latest.chat_reasoning_effort = 'disabled', ''
+            else:
+                latest.chat_thinking, latest.chat_reasoning_effort = 'enabled', effort[:64]
+        self.config.set_chat_settings(latest)
+        self.config.save()
+        self.settings = self.config.chat_settings()
+        self._sync_chat_selectors()
+        self._update_chat_provider_label()
+
+    def _change_chat_provider(self, *_args) -> None:
+        provider_id = str(self.chat_provider_selector.currentData() or '')
+        if provider_id and provider_id in self.settings.providers:
+            if provider_id != self.settings.effective_chat_provider_id:
+                self._commit_chat_preferences(provider_id=provider_id)
+
+    def _change_chat_model(self, *_args) -> None:
+        model = self.chat_model_selector.currentText().strip()
+        if model and model != self.settings.conversation_config.model:
+            self._commit_chat_preferences(model=model)
+
+    def _change_chat_effort(self, *_args) -> None:
+        self._commit_chat_preferences(effort=str(self.chat_effort_selector.currentData() or 'inherit'))
+
+    def _update_chat_provider_label(self) -> None:
+        config = self.settings.conversation_config
+        self.provider_label.setText(config.model)
+        self.provider_label.setToolTip(
+            f'聊天 API：{config.name}\n协议：{config.api_protocol}\n地址：{config.base_url}'
+        )
+
     def refresh_settings(self) -> None:
         self.settings = self.config.chat_settings()
-        self.provider_label.setText(self.settings.active_config.model)
-        self.provider_label.setToolTip(self.settings.active_config.model)
+        self._sync_chat_selectors()
+        self._sync_web_search_toggle()
+        self.settings = self.config.chat_settings()
+        self._update_chat_provider_label()
         self._apply_character_theme()
         self._style()
         self._refresh_sessions()
@@ -2155,7 +2371,9 @@ class ChatWindow(QDialog):
         # （append_message 返回 None 时消息只在内存）。与并发 append 的
         # 覆盖窗口是同调用栈内的微秒级，可接受（R3 复审结论：保留）。
         self.store.save(self.session)
-        config = self.settings.active_config
+        if self.chat_model_selector.currentText().strip() != self.settings.conversation_config.model:
+            self._change_chat_model()
+        config = self.settings.conversation_config
         config.api_key = self.config.resolve_api_key(config)
         messages = self.prompt_builder.build_messages(self.settings, self.character_id, self.session.messages[:-1], text)
         if image_payloads:
@@ -2167,7 +2385,13 @@ class ChatWindow(QDialog):
         # 恒命中 → 不进忙态、按钮不变停止、桌宠不切思考态。
         request_id = uuid.uuid4().hex
         self._active_request_id = request_id
-        self.service.send(messages, config, request_id=request_id)
+        from ..desktop_agent import task_from_message, OpenClawProvider
+        task = task_from_message(text)
+        agent_provider = (OpenClawProvider(self.config.get("desktop_agent", {}), self.session.session_id, task)
+                          if task is not None else None)
+        if agent_provider is not None:
+            messages = []  # Agent only receives explicit task, never pet chat history.
+        self.service.send(messages, config, request_id=request_id, provider=agent_provider)
         self._bottom()
 
     def _focus_chat(self) -> None:

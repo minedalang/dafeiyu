@@ -3427,7 +3427,7 @@ class OverlayShell(QObject):
         self._look_bubble("让我看看…", 6000)
         # 主线程解析快照，后台 worker 只做网络/识图（同 window.py 的线程纪律）
         settings = self._config.chat_settings()
-        provider = copy.copy(settings.active_config)
+        provider = copy.copy(settings.conversation_config)
         provider.api_key = self._config.resolve_api_key(provider)
         system_prompt = settings.default_system_prompt
         # 角色展示名按**发起者**的身份取（子宠可以有自己的角色）
